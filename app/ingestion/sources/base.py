@@ -17,6 +17,8 @@ class JobSource(ABC):
     name: str
     full_snapshot: bool = False
     ttl_days: int | None = None
+    # Anyone can post (forum threads): screen out posts that aren't job ads.
+    user_generated: bool = False
 
     @abstractmethod
     def fetch_raw(self) -> AsyncIterator[dict[str, Any]]: ...

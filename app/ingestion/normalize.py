@@ -118,6 +118,52 @@ def looks_remote(*texts: str | None) -> bool:
     return any(t and _REMOTE.search(t) for t in texts)
 
 
+# ---------------------------------------------------------------------------
+# Not-a-job detection for open forums (HN): candidates sometimes post their own
+# pitch in a "Who is hiring" thread. Real posts can also open in the first
+# person ("I'm the CTO at X, we're hiring", "I am a recruiter at Y"), so a
+# first-person opening only counts when no hiring signal appears anywhere.
+# ---------------------------------------------------------------------------
+
+# Rule 1: the post *opens* with a first-person pitch or application.
+_SELF_OPENING = re.compile(
+    r"^\W*(hi|hello|hey)?[\s,!.]*"
+    r"(i'?m|i am|my name is)\s+(?!(a |an |the )?(recruiter|founder|co-?founder|cto|ceo|coo|vp|head|"
+    r"hiring|engineering manager|director|lead\b|talent))"
+    r"|\bi'?m applying\b|\bi am applying\b"
+    r"|\b(hire me|open to (work|opportunities|new roles)|my (resume|cv|portfolio)\b)"
+    r"|\b(i'?m|i am) (currently )?(looking|seeking|searching) for (a |my next )?(job|role|position|work|opportunit)",
+    re.I,
+)
+# Rule 2: anywhere early on, "I'm a <...> engineer/developer" plus profile language
+# (catches pitches formatted like a job header: "Name | Role | Location  I'm a ...").
+_SELF_ROLE = re.compile(r"\b(i'?m|i am) (a|an) [\w\s/&,-]{0,40}?(engineer|developer|designer|scientist)\b", re.I)
+_PROFILE = re.compile(
+    r"\b(i (enjoy|love|specialize|have hands-on|have \d+\+? years)|my (experience|skills|stack|background)|"
+    r"years of experience)\b",
+    re.I,
+)
+# Any of these means someone is hiring, which overrides both rules.
+_HIRING = re.compile(
+    r"\b(we'?re hiring|we are hiring|is hiring|actively hiring|now hiring|hiring for|we'?re looking|"
+    r"we are looking|join (us|our)|our team|apply (here|at|now|via)|to apply|sourcing for|"
+    r"looking for (contributors|co-?founders?|founding)|founding (team|engineer)|founder|recruit\w*|"
+    r"on behalf of|our client|work with me|equity|salary|compensation|careers)\b"
+    r"|[$€£]\s?\d",
+    re.I,
+)
+
+
+def looks_like_self_promotion(text: str) -> bool:
+    """True if the post reads as a candidate advertising themselves, not a job.
+    High-precision by design: a missed self-promo post costs one bad result,
+    while dropping a real job is invisible and permanent."""
+    if _HIRING.search(text):
+        return False
+    opening = text[:400]
+    return bool(_SELF_OPENING.search(opening) or (_SELF_ROLE.search(opening) and _PROFILE.search(opening)))
+
+
 # canonical skill -> regex alternatives. Kept deliberately small and
 # high-precision; the LLM profile extractor (Layer 3) handles the long tail.
 _SKILLS: dict[str, str] = {

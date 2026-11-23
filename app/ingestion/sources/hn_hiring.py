@@ -64,6 +64,7 @@ def parse_header(header: str) -> dict:
 class HNHiringSource(JobSource):
     name = "hn_hiring"
     full_snapshot = True
+    user_generated = True
 
     def __init__(self, months: int = 2):
         self.months = months

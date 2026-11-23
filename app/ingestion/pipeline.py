@@ -17,7 +17,7 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.ingestion.models import JobPosting
-from app.ingestion.normalize import content_hash, dedupe_key
+from app.ingestion.normalize import content_hash, dedupe_key, looks_like_self_promotion
 from app.ingestion.sources.base import JobSource
 from app.search.keyword import refresh_lexeme_stats
 
@@ -40,6 +40,7 @@ class RunStats:
     unchanged: int = 0
     duplicates: int = 0
     invalid: int = 0
+    rejected: int = 0
     expired: int = 0
 
 
@@ -156,6 +157,10 @@ async def run_ingestion(pool: AsyncConnectionPool, source: JobSource) -> RunStat
                 except (ValidationError, KeyError, ValueError) as e:
                     stats.invalid += 1
                     log.debug("invalid record from %s: %s", source.name, e)
+                    continue
+                if source.user_generated and looks_like_self_promotion(job.description):
+                    stats.rejected += 1  # not a job ad; never inserted, so any old copy expires
+                    log.info("rejected self-promotion post %s:%s", source.name, job.external_id)
                     continue
                 if job.external_id in seen_ids:  # duplicate id inside one feed
                     stats.duplicates += 1

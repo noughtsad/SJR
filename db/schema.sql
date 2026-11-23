@@ -115,3 +115,6 @@ CREATE TABLE IF NOT EXISTS corpus_stats (
     n_docs        INT NOT NULL,
     refreshed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- posts screened out as not-a-job (e.g. candidate self-promotion in HN threads)
+ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS rejected INT NOT NULL DEFAULT 0;
