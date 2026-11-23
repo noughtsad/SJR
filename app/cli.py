@@ -100,6 +100,16 @@ async def cmd_search(args):
         print(f"{i:>2}. {h.title} | {h.company} | {h.location} [{h.seniority or '-'}]\n    {sig}")
 
 
+async def cmd_refresh_stats(_args):
+    from app.search.keyword import refresh_lexeme_stats
+
+    async def go(pool):
+        async with pool.connection() as conn:
+            print(f"lexeme_stats: {await refresh_lexeme_stats(conn)} lexemes")
+
+    await _with_pool(go)
+
+
 async def cmd_stats(_args):
     async def go(pool):
         async with pool.connection() as conn:
@@ -148,6 +158,7 @@ def main():
     ps.add_argument("--seniority", nargs="*")
 
     sub.add_parser("stats")
+    sub.add_parser("refresh-stats", help="recompute keyword-search document frequencies")
 
     args = p.parse_args()
     if args.cmd == "init-db":
@@ -156,7 +167,7 @@ def main():
         return
     handler = {
         "ingest": cmd_ingest, "embed": cmd_embed, "refresh": cmd_refresh,
-        "search": cmd_search, "stats": cmd_stats,
+        "search": cmd_search, "stats": cmd_stats, "refresh-stats": cmd_refresh_stats,
     }[args.cmd]  # fmt: skip
     run(handler(args))
 

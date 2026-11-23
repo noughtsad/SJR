@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from statistics import mean
 
 from app.db import make_pool, run
-from app.evals.dataset import HANDLABELED_PATH, RESULTS_DIR, SYNTHETIC_PATH, EvalQuery, key_to_id_map, load
+from app.evals.dataset import HANDLABELED_PATH, JUDGED_PATH, RESULTS_DIR, SYNTHETIC_PATH, EvalQuery, key_to_id_map, load
 from app.evals.metrics import mrr_at_k, ndcg_at_k, percentile, recall_at_k
 from app.search.models import SearchMode, SearchRequest
 from app.search.service import search
@@ -36,7 +36,9 @@ async def _coverage(pool, model: str) -> tuple[int, int]:
 
 
 async def evaluate(models: list[str], modes: list[SearchMode], limit: int | None) -> dict:
-    queries: list[EvalQuery] = load(SYNTHETIC_PATH) + [q for q in load(HANDLABELED_PATH) if q.qrels]
+    queries: list[EvalQuery] = (
+        load(SYNTHETIC_PATH) + load(JUDGED_PATH) + [q for q in load(HANDLABELED_PATH) if q.qrels]
+    )
     if limit:
         queries = queries[:limit]
     pool = make_pool()
@@ -108,7 +110,7 @@ def summarise(per_query: list[dict]) -> dict:
 
 def to_markdown(summary: dict, meta: dict) -> str:
     configs = list(dict.fromkeys(k.split("|")[0] for k in summary))
-    sets = [s for s in ("synthetic", "handlabeled") if any(k.endswith(f"|{s}") for k in summary)]
+    sets = [s for s in ("synthetic", "judged", "handlabeled") if any(k.endswith(f"|{s}") for k in summary)]
     out = [f"_Run {meta['when']} · {meta['n_queries']} queries · {meta['active_note']}_\n"]
     for s in sets:
         n = next(v["n"] for k, v in summary.items() if k.endswith(f"|{s}"))

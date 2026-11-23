@@ -19,6 +19,7 @@ from app.config import get_settings
 from app.ingestion.models import JobPosting
 from app.ingestion.normalize import content_hash, dedupe_key
 from app.ingestion.sources.base import JobSource
+from app.search.keyword import refresh_lexeme_stats
 
 log = logging.getLogger(__name__)
 
@@ -167,6 +168,8 @@ async def run_ingestion(pool: AsyncConnectionPool, source: JobSource) -> RunStat
             if batch:
                 await _apply_batch(conn, source.name, batch, stats)
             await _expire(conn, source, run["started_at"], stats)
+            if stats.inserted or stats.updated or stats.expired:
+                await refresh_lexeme_stats(conn)  # keyword IDF must track the corpus
             status = "ok"
     except Exception as e:
         error = repr(e)

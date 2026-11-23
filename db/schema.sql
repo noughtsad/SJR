@@ -99,3 +99,19 @@ CREATE TABLE IF NOT EXISTS ingestion_runs (
     expired      INT NOT NULL DEFAULT 0,
     error        TEXT
 );
+
+-- ---------------------------------------------------------------------------
+-- Document frequencies for keyword search. Postgres ts_rank has no IDF, so a
+-- query word like "role" (in most postings) counts as much as "surgery".
+-- Refreshed after every ingestion run (app.search.keyword.refresh_lexeme_stats).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS lexeme_stats (
+    lexeme  TEXT PRIMARY KEY,
+    ndoc    INT  NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS corpus_stats (
+    id            BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+    n_docs        INT NOT NULL,
+    refreshed_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);

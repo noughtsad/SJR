@@ -78,7 +78,7 @@ async def search(pool: AsyncConnectionPool, req: SearchRequest) -> SearchRespons
         else:
             kw, vec = await asyncio.gather(run_keyword(), run_vector())  # two pool connections, in parallel
             with t("fusion"):
-                ranked = rrf_fuse(kw, vec, k=s.rrf_k)
+                ranked = rrf_fuse(kw, vec, k=s.rrf_k, w_keyword=s.rrf_w_keyword, w_vector=s.rrf_w_vector)
 
         top_n = s.rerank_top_n if mode is SearchMode.hybrid_rerank else req.k
         ranked = ranked[:top_n]

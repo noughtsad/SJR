@@ -23,7 +23,10 @@ class Settings(BaseSettings):
     rerank_top_n: int = 30
 
     # Search
+    keyword_max_df: float = 0.15  # drop query terms appearing in more than this share of jobs
     rrf_k: int = 60
+    rrf_w_keyword: float = 1.0
+    rrf_w_vector: float = 1.0
     candidate_pool: int = 50  # how many results each retriever contributes to fusion
     hnsw_ef_search: int = 100
 

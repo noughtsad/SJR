@@ -61,7 +61,7 @@ Queries repeat that expression and predicate as literals so the planner can matc
 > At ~500 rows Postgres correctly prefers an exact scan (cheaper than HNSW). The HNSW index takes over at Kaggle scale, which you can check with `EXPLAIN`.
 
 **Search stages**: each stage is a separate module, and each response returns every stage's rank and score plus per-stage latency.
-- *Keyword*: `websearch_to_tsquery` ANDs all terms, so natural-language queries match nothing. Instead the query is lexemised with the same `english` config and the lexemes are OR-ed. `ts_rank_cd` with field weights (title A > company/category B > body C) then rewards documents that match more terms.
+- *Keyword (BM25-lite on Postgres FTS)*: Postgres `ts_rank` has **no IDF**. ANDing all terms matches nothing for natural queries. ORing them let words like "want" and "role" match 15.6k of 19.4k jobs, and ranking those took ~700 ms. The fix: a `lexeme_stats` table holds document frequencies (via `ts_stat`, ~1.6 s, refreshed after each ingest). Query terms found in more than 15% of jobs are dropped, and candidates are scored by Σ BM25-IDF of matched terms, with title matches counting double. Full BM25's term-frequency saturation and length normalisation are not modelled.
 - *Vector*: filters plus HNSW can return too few rows, because the index returns `ef_search` neighbours before the WHERE clause runs. pgvector 0.8's `hnsw.iterative_scan = relaxed_order` keeps scanning until the limit is met, and an outer `ORDER BY` restores exact order.
 - *Fusion*: RRF uses only ranks, because `ts_rank` and cosine similarity are on incomparable scales. Score = Σ 1/(60 + rank).
 - *Rerank*: a cross-encoder reads query and job together, which is more accurate than a bi-encoder but too slow for the whole index, so it only rescores the fused top 30.
@@ -87,16 +87,42 @@ python -m app.evals.run --models bge-small minilm gemini   # compare embedding m
 
 **Two query sets**
 - **Synthetic (80)**: sampled postings (70% LinkedIn, 25% HN, 5% Remotive). Gemini writes the query a job seeker would type, in three styles: `keyword` (2–5 words), `natural` (a sentence), `skills` (built around experience, not the title). The source posting is the single known-relevant result. The prompt bans the company name and verbatim titles. An audit found no company leaks; 18/80 contain the title, almost all generic ones that real users type ("Project Manager").
-- **Hand-labelled (30)**: realistic queries written by hand, judged with TREC-style **pooling**. The top 10 from all four modes are merged and shuffled (so you can't tell which system found what), then graded 0/1/2. Gemini pre-suggests grades; a human confirms every one.
+- **AI-judged (30 queries, 607 judgements)**: realistic queries written by hand, judged with TREC-style **pooling**. The top 10 from all four modes are merged and graded 0/1/2 by Claude against a written rubric ([`JUDGING_RUBRIC.md`](evals/retrieval/JUDGING_RUBRIC.md)), without knowing which mode returned which job. This set is *not* human-labelled. A human set can be added with `python -m app.evals.label`, which pools the same way, pre-suggests grades and has a person confirm each one. It is stored separately in `handlabeled.jsonl`.
 
 **Metrics**: Recall@10, MRR@10, nDCG@10 (graded, exponential gain), plus p50/p95 latency.
 
 **Known biases, stated deliberately**
 - Synthetic: only the source posting counts as relevant, so other genuinely matching jobs score as misses. Absolute recall is a lower bound. Comparisons between modes are still fair because every mode faces the same handicap.
-- Hand-labelled: unjudged documents count as non-relevant (the standard pooling assumption), so recall means "recall within the judged pool".
+- Judged set: unjudged documents count as non-relevant (the standard pooling assumption), so recall means "recall within the judged pool". Most queries have more than 10 relevant jobs, so Recall@10 can't reach 1; read it comparatively. Judge strictness varied between the three judges (see the rubric file). That affects absolute scores, but not comparisons between modes, since every mode is scored against the same labels.
 - Labels key on `source:external_id`, not the serial `jobs.id`, so the eval set survives a database rebuild. Queries whose target job has since expired are skipped and counted.
 
-**Results**: see [`evals/results/latest.md`](evals/results/latest.md).
+**Results** (80 synthetic queries, ~19.4k jobs, bge-small, RTX 3070; full table in [`evals/results/latest.md`](evals/results/latest.md)):
+
+| Mode | Recall@10 | MRR@10 | nDCG@10 | p50 ms |
+|---|---|---|---|---|
+| keyword | 0.738 | 0.483 | 0.545 | 53 |
+| vector | 0.787 | 0.702 | 0.723 | 13 |
+| hybrid (RRF) | 0.838 | 0.670 | 0.711 | 56 |
+| **hybrid + rerank** | **0.912** | **0.841** | **0.858** | 107 |
+
+**What the eval caught.** The first run had keyword search at recall 0.30 / MRR 0.13 and 200 ms. Equal-weight RRF then made hybrid *worse* than vector alone (MRR 0.40 vs 0.70). Profiling found the missing-IDF problem above. After the fix, keyword search improved 2.5× in recall and 4× in speed, and hybrid now beats vector on recall (0.84 vs 0.79).
+
+**Tuning, and resisting over-tuning.** A sweep of the DF cutoff (0.05–0.4) showed 0.25 gives better keyword-only MRR, but no gain after fusion at twice the latency, so 0.15 stays. Weighting vector 2–3× in RRF helps plain hybrid slightly but hurts hybrid+rerank, the production mode, because the reranker benefits from a more diverse top 30. Weights stay 1:1. With 80 queries, differences of about 0.03 are 2–3 queries, so they are not tuned further until the hand-labelled set exists.
+
+**On realistic queries (AI-judged set, 30 queries):**
+
+| Mode | Recall@10 | MRR@10 | nDCG@10 | p50 ms |
+|---|---|---|---|---|
+| keyword | 0.416 | 0.796 | 0.597 | 15 |
+| vector | **0.604** | 0.978 | 0.803 | 11 |
+| hybrid (RRF) | 0.555 | 0.967 | 0.784 | 14 |
+| **hybrid + rerank** | 0.590 | **0.983** | **0.820** | 49 |
+
+- **MRR saturates.** Realistic queries ("HR generalist") have many matching jobs, so every semantic mode nearly always puts a relevant job first. nDCG and recall are the measures that separate the modes here.
+- **Hybrid+rerank still ranks best (nDCG 0.820), but vector alone is close (0.803) at a quarter of the latency.** That is a real product trade-off. A latency-sensitive endpoint, such as autocomplete or the agent's internal `search_jobs` calls, could use vector-only.
+- **On short realistic queries, equal-weight RRF still lets keyword search pull hybrid below vector.** This matches the synthetic sweep, where weighting vector more helped plain hybrid. With 30 queries, differences of about 0.02 are within noise.
+
+GPU vs CPU (i7-12650H): embedding 417 vs ~7 docs/s, rerank of 30 docs 58 ms vs ~1 s.
 
 ## Next up
 Layer 3: resume → profile, feedback-driven personalisation, grounded match explanations.

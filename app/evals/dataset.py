@@ -11,13 +11,15 @@ from app.search.models import SearchFilters
 EVAL_DIR = Path(__file__).resolve().parents[2] / "evals" / "retrieval"
 SYNTHETIC_PATH = EVAL_DIR / "synthetic.jsonl"
 HANDLABELED_PATH = EVAL_DIR / "handlabeled.jsonl"
+JUDGED_PATH = EVAL_DIR / "judged.jsonl"
 RESULTS_DIR = Path(__file__).resolve().parents[2] / "evals" / "results"
 
 
 class EvalQuery(BaseModel):
     qid: str
     query: str
-    set: str  # "synthetic" | "handlabeled"
+    set: str  # "synthetic" | "handlabeled" (human) | "judged" (LLM judge with a written rubric)
+    judged_by: str | None = None  # who produced qrels for non-synthetic sets
     style: str | None = None  # synthetic: keyword | natural | skills
     filters: SearchFilters = Field(default_factory=SearchFilters)
     qrels: dict[str, int] = Field(default_factory=dict)  # "source:external_id" -> 0/1/2
