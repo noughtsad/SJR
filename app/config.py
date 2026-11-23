@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     # Embeddings: key from app.embeddings.registry.MODELS
     embedding_model: str = "bge-small"
     embedding_batch_size: int = 64
+    # "auto" = CUDA if available, else CPU. Force with DEVICE=cpu / DEVICE=cuda.
+    device: str = "auto"
 
     # Reranker (cross-encoder). MiniLM-L6 (22M params) is CPU-friendly;
     # BAAI/bge-reranker-base (278M) is usually more accurate but much slower.

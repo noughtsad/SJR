@@ -8,3 +8,4 @@ data/raw/
 data/*.csv
 data/archive/
 data/*.zip
+evals/results/*.json

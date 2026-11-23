@@ -17,8 +17,12 @@ from app.search.models import Candidate
 def _model():
     from sentence_transformers import CrossEncoder
 
+    from app.device import get_device, model_kwargs
+
     s = get_settings()
-    return CrossEncoder(s.reranker_model, device="cpu", max_length=s.rerank_max_tokens)
+    return CrossEncoder(
+        s.reranker_model, device=get_device(), max_length=s.rerank_max_tokens, model_kwargs=model_kwargs()
+    )
 
 
 def _score(query: str, docs: list[str]) -> list[float]:

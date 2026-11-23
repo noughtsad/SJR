@@ -50,8 +50,10 @@ class LocalEmbedder:
     def __init__(self, spec: ModelSpec):
         from sentence_transformers import SentenceTransformer
 
+        from app.device import get_device, model_kwargs
+
         self.spec = spec
-        self.model = SentenceTransformer(spec.name, device="cpu")
+        self.model = SentenceTransformer(spec.name, device=get_device(), model_kwargs=model_kwargs())
 
     def _encode(self, texts: list[str]) -> list[np.ndarray]:
         out = self.model.encode(texts, batch_size=32, normalize_embeddings=True, show_progress_bar=False)

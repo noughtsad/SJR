@@ -76,5 +76,27 @@ Queries repeat that expression and predicate as literals so the planner can matc
 ## Scheduling
 `.github/workflows/refresh-index.yml` runs `python -m app.cli refresh` 3× a day against the `DATABASE_URL` secret. `ci.yml` runs ruff and pytest.
 
+## Retrieval evals
+
+```bash
+python -m app.evals.generate --n 80      # synthetic queries (Gemini), appended to evals/retrieval/synthetic.jsonl
+python -m app.evals.label                # hand-label the 30 realistic queries (interactive)
+python -m app.evals.run                  # all modes; table -> evals/results/latest.md
+python -m app.evals.run --models bge-small minilm gemini   # compare embedding models
+```
+
+**Two query sets**
+- **Synthetic (80)**: sampled postings (70% LinkedIn, 25% HN, 5% Remotive). Gemini writes the query a job seeker would type, in three styles: `keyword` (2–5 words), `natural` (a sentence), `skills` (built around experience, not the title). The source posting is the single known-relevant result. The prompt bans the company name and verbatim titles. An audit found no company leaks; 18/80 contain the title, almost all generic ones that real users type ("Project Manager").
+- **Hand-labelled (30)**: realistic queries written by hand, judged with TREC-style **pooling**. The top 10 from all four modes are merged and shuffled (so you can't tell which system found what), then graded 0/1/2. Gemini pre-suggests grades; a human confirms every one.
+
+**Metrics**: Recall@10, MRR@10, nDCG@10 (graded, exponential gain), plus p50/p95 latency.
+
+**Known biases, stated deliberately**
+- Synthetic: only the source posting counts as relevant, so other genuinely matching jobs score as misses. Absolute recall is a lower bound. Comparisons between modes are still fair because every mode faces the same handicap.
+- Hand-labelled: unjudged documents count as non-relevant (the standard pooling assumption), so recall means "recall within the judged pool".
+- Labels key on `source:external_id`, not the serial `jobs.id`, so the eval set survives a database rebuild. Queries whose target job has since expired are skipped and counted.
+
+**Results**: see [`evals/results/latest.md`](evals/results/latest.md).
+
 ## Next up
-Layer 5's retrieval eval (synthetic + hand-labelled queries; recall@10, MRR, nDCG@10 for each mode) should come next. It turns the design choices above into numbers, e.g. bge-small vs minilm vs gemini, and MiniLM vs bge reranker.
+Layer 3: resume → profile, feedback-driven personalisation, grounded match explanations.
