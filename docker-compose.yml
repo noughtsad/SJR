@@ -1,0 +1,35 @@
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_USER: jobs
+      POSTGRES_PASSWORD: jobs
+      POSTGRES_DB: jobs
+    ports:
+      - "5433:5432"   # 5433 on the host to avoid clashing with a local Postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jobs -d jobs"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://jobs:jobs@db:5432/jobs
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-small}
+    ports:
+      - "8000:8000"
+    volumes:
+      - hfcache:/root/.cache/huggingface   # keep downloaded models across rebuilds
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles: ["api"]   # `docker compose --profile api up` (or run uvicorn locally)
+
+volumes:
+  pgdata:
+  hfcache:

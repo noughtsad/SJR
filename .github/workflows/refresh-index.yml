@@ -1,0 +1,31 @@
+name: refresh-index
+
+# Pulls fresh jobs, upserts changes, expires delisted postings, and embeds
+# only new/changed rows. Needs a DATABASE_URL secret pointing at a reachable
+# Postgres (your deployed DB, or Supabase).
+on:
+  schedule:
+    - cron: "17 */8 * * *"   # 3x/day, within Remotive's fair-use guidance
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Cache HF models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('app/embeddings/registry.py') }}
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements.txt
+      - run: python -m app.cli init-db
+        env: { DATABASE_URL: "${{ secrets.DATABASE_URL }}" }
+      - run: python -m app.cli refresh
+        env: { DATABASE_URL: "${{ secrets.DATABASE_URL }}" }
