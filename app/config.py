@@ -44,6 +44,13 @@ class Settings(BaseSettings):
     rec_seniority_penalty: float = 0.03  # per level of mismatch
     rec_max_per_company: int = 2
 
+    # Career agent (Layer 4). Defaults to llm_model; a separate knob because the agent makes
+    # several calls per turn and free-tier quotas are per model.
+    agent_model: str | None = "gemini-3.5-flash-lite"
+    agent_max_messages: int = 40  # most recent messages of a thread the model sees
+    agent_recursion_limit: int = 25  # graph steps per turn (each tool round trip is 2)
+    agent_max_tool_rounds: int = 4  # then the model must answer without tools
+
     # Ingestion
     remotive_url: str = "https://remotive.com/api/remote-jobs"
     http_timeout_s: float = 30.0

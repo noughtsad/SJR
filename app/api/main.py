@@ -4,6 +4,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel, Field
 
+from app.agent.memory import delete_fact, get_facts
+from app.agent.runtime import agent_runtime, chat_stream, thread_config
 from app.config import get_settings
 from app.db import make_pool
 from app.embeddings.registry import get_embedder
@@ -28,11 +30,13 @@ async def lifespan(app: FastAPI):
     # load models at startup, not on the first request
     get_embedder(get_settings().embedding_model)
     rerank_warmup()
-    yield
+    async with agent_runtime(pool) as (graph, store):
+        app.state.agent, app.state.store = graph, store
+        yield
     await pool.close()
 
 
-app = FastAPI(title="Semantic Job Search", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="Semantic Job Search", version="0.3.0", lifespan=lifespan)
 
 MAX_RESUME_BYTES = 5 * 1024 * 1024
 
@@ -133,3 +137,56 @@ async def feedback(req: FeedbackRequest, request: Request):
 @app.get("/users/{user_id}/jobs/{job_id}/explain", response_model=Explanation)
 async def explain_match(user_id: str, job_id: int, request: Request, refresh: bool = False):
     return await explain(request.app.state.pool, user_id, job_id, refresh=refresh)
+
+
+# ---------------------------------------------------------------------------
+# Layer 4: career agent
+# ---------------------------------------------------------------------------
+
+
+class ChatRequest(BaseModel):
+    user_id: str = Field(min_length=1, max_length=100)
+    thread_id: str = Field("default", min_length=1, max_length=100)
+    message: str = Field(min_length=1, max_length=20_000)  # long enough for a pasted resume
+
+
+@app.post("/chat")
+async def chat(req: ChatRequest, request: Request):
+    """Server-sent events: token, tool_call, tool_result, retract, then final (or error).
+    See app.agent.runtime for the event shapes."""
+    import json
+
+    from fastapi.responses import StreamingResponse
+
+    async def events():
+        async for ev in chat_stream(request.app.state.agent, req.user_id, req.thread_id, req.message):
+            yield f"event: {ev['type']}\ndata: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/chat/{user_id}/{thread_id}")
+async def chat_history(user_id: str, thread_id: str, request: Request):
+    """The visible conversation: user messages and final answers (tool traffic omitted)."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    from app.agent.graph import _text
+
+    state = await request.app.state.agent.aget_state(thread_config(user_id, thread_id))
+    out = []
+    for m in (state.values or {}).get("messages", []):
+        if isinstance(m, HumanMessage) and not m.additional_kwargs.get("validator"):
+            out.append({"role": "user", "text": _text(m.content)})
+        elif isinstance(m, AIMessage) and not m.tool_calls and _text(m.content):
+            out.append({"role": "assistant", "text": _text(m.content)})
+    return {"thread_id": thread_id, "messages": out}
+
+
+@app.get("/users/{user_id}/facts")
+async def list_facts(user_id: str, request: Request):
+    return await get_facts(request.app.state.store, user_id)
+
+
+@app.delete("/users/{user_id}/facts/{key}", status_code=204)
+async def forget_fact(user_id: str, key: str, request: Request):
+    await delete_fact(request.app.state.store, user_id, key)

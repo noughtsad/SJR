@@ -12,6 +12,7 @@
   python -m app.cli recommend --user demo [--k 10] [--no-feedback]
   python -m app.cli feedback --user demo --job 123 --action save|dismiss|clear
   python -m app.cli explain --user demo --job 123 [--refresh]
+  python -m app.cli chat --user demo [--thread t1] [-m "one message"]
 """
 
 import argparse
@@ -175,6 +176,45 @@ async def cmd_explain(args):
     print(json.dumps(e.model_dump(), indent=2))
 
 
+async def cmd_chat(args):
+    import asyncio
+    import uuid
+
+    from app.agent.runtime import agent_runtime, chat_stream
+
+    thread = args.thread or uuid.uuid4().hex[:8]
+
+    async def turn(graph, text):
+        async for ev in chat_stream(graph, args.user, thread, text):
+            t = ev["type"]
+            if t == "token":
+                print(ev["text"], end="", flush=True)
+            elif t == "tool_call":
+                print(f"\n  -> {ev['name']}({json.dumps(ev['args'], ensure_ascii=False)})", flush=True)
+            elif t == "tool_result":
+                print(f"  <- {ev['name']}: {ev['preview'][:120]}...", flush=True)
+            elif t == "retract":
+                print("\n  !! draft rejected by citation check, regenerating", flush=True)
+            elif t == "error":
+                print(f"\n  !! {ev['kind']}: {ev['message']}\n", flush=True)
+            elif t == "final":
+                print(f"\n\n[cited={ev['cited_job_ids']} usage={ev['usage']} {ev['latency_ms']} ms]\n")
+
+    async def go(pool):
+        async with agent_runtime(pool) as (graph, _store):
+            print(f"thread {thread}  (user {args.user}); empty line or Ctrl+C to quit\n")
+            if args.message:
+                await turn(graph, args.message)
+                return
+            while True:
+                text = (await asyncio.to_thread(input, "you> ")).strip()
+                if not text:
+                    return
+                await turn(graph, text)
+
+    await _with_pool(go)
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     p = argparse.ArgumentParser(prog="app.cli")
@@ -227,6 +267,11 @@ def main():
     px.add_argument("--job", type=int, required=True)
     px.add_argument("--refresh", action="store_true")
 
+    pc = sub.add_parser("chat", help="talk to the career agent (streams tokens and tool calls)")
+    pc.add_argument("--user", required=True)
+    pc.add_argument("--thread", help="continue a conversation; default starts a new one")
+    pc.add_argument("-m", "--message", help="send one message and exit")
+
     args = p.parse_args()
     if args.cmd == "init-db":
         run(init_db())
@@ -236,6 +281,7 @@ def main():
         "ingest": cmd_ingest, "embed": cmd_embed, "refresh": cmd_refresh,
         "search": cmd_search, "stats": cmd_stats, "refresh-stats": cmd_refresh_stats,
         "profile": cmd_profile, "recommend": cmd_recommend, "feedback": cmd_feedback, "explain": cmd_explain,
+        "chat": cmd_chat,
     }[args.cmd]  # fmt: skip
     run(handler(args))
 

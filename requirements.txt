@@ -12,3 +12,6 @@ sentence-transformers>=3.3
 google-genai>=1.0
 pypdf>=5.0
 python-multipart>=0.0.9
+langgraph>=1.2
+langgraph-checkpoint-postgres>=3.2
+langchain-google-genai>=4.5

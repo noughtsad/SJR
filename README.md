@@ -1,13 +1,13 @@
 # Semantic Job Search
 
-Semantic job search and recommendation over a continuously changing jobs index, with a career agent on top (in progress).
+Semantic job search and recommendation over a continuously changing jobs index, with a career agent on top.
 
 | Layer | Status |
 |---|---|
 | 1. Ingestion + changing index (Postgres + pgvector) | ✅ |
 | 2. Search: keyword → vector → hybrid (RRF) → cross-encoder rerank | ✅ |
 | 3. Resume profile, feedback loop, grounded explanations | ✅ |
-| 4. LangGraph career agent (tools, memory) | ⏳ |
+| 4. LangGraph career agent (tools, memory, streaming) | ✅ |
 | 5. Retrieval + agent evals in CI | ⏳ |
 | 6. Production hardening, tracing, Next.js UI | partial (FastAPI, Docker, `/health`, `/search`, `/recommend`, `/feedback`, query cache) |
 
@@ -32,6 +32,7 @@ python -m app.cli profile --user demo --resume examples/resume_data_engineer.md
 python -m app.cli recommend --user demo
 python -m app.cli feedback --user demo --job <id> --action save      # or dismiss / clear
 python -m app.cli explain --user demo --job <id>
+python -m app.cli chat --user demo            # career agent REPL (streams tokens + tool calls)
 ```
 
 API:
@@ -39,6 +40,7 @@ API:
 - `POST /users/{id}/resume` (multipart PDF/MD/TXT → profile), `GET /users/{id}/profile`
 - `POST /recommend` `{"user_id": "demo", "k": 10}`, `POST /feedback` `{"user_id", "job_id", "action": "save"|"dismiss"|null}`
 - `GET /users/{id}/jobs/{job_id}/explain`
+- `POST /chat` `{"user_id", "thread_id", "message"}` → server-sent events; `GET /chat/{user}/{thread}`; `GET|DELETE /users/{id}/facts`
 
 ## Architecture
 
@@ -162,5 +164,33 @@ GPU vs CPU (i7-12650H): embedding 417 vs ~7 docs/s, rerank of 30 docs 58 ms vs ~
 
 **Latency** (warm, RTX 3070, 19.4k jobs): profile embedding ~17 ms, vector search ~5 ms, **total ~28 ms**. An explanation is one Gemini call (a few seconds, then cached).
 
+## Career agent (Layer 4)
+
+```
+ START ─► agent ──(tool calls)──► tools ──► agent ...           (≤ 4 tool rounds per turn)
+            │
+            └─(answer)─► check_citations ──ok──► END
+                              │
+                              └─ cites a job no tool returned ─► agent  (≤ 2 retries, then struck out)
+```
+
+A hand-written LangGraph `StateGraph` (not the prebuilt ReAct agent), so the guard rails are visible graph nodes.
+
+**Tools**: `search_jobs`, `recommend_jobs`, `get_job_details`, `parse_resume`, `skill_gap`, `save_job`, `list_saved_jobs`, `remember_fact`, `get_my_profile`. They are thin adapters over the Layer 2/3 services, and each returns compact JSON with explicit `job_id`s.
+- **The user id never comes from the model.** Tools read it from the run config, so a prompt injection in a job posting can't make the agent act on another user's data. Thread ids are also namespaced by user.
+- **Schema-validated tool calls with retry.** Argument schemas come from type hints (`Literal` enums for seniority and save/dismiss). Invalid arguments, unknown job ids, a missing resume or a rate-limited LLM inside a tool come back to the model as an `Error:` tool result, so it can correct itself. In testing, a 429 inside `skill_gap` produced an honest "the gap tool is rate-limited", not a failed turn.
+
+**"No invented jobs" check.** The prompt requires every job to be cited as `[job <id>]`. `check_citations` compares those ids with the ids that tool results returned *in this thread*. A failing answer is removed from the history, the model is told which ids were invalid, and it regenerates. After 2 failed retries the bad citations are replaced with `[unverified job removed]`. Because tokens stream before the check runs, the stream emits a `retract` event so clients drop the draft.
+
+**Memory**
+- *Short-term*: the full thread is stored in Postgres by `AsyncPostgresSaver`, so a conversation survives restarts. The model sees the last 40 messages, trimmed at a user turn so tool calls stay paired with their results.
+- *Long-term*: `AsyncPostgresStore` keeps facts under `("user_facts", user_id)`, and they are injected into every new thread's system prompt. Keys are a fixed vocabulary (`work_mode`, `salary_expectation`, `avoid`, …), so "now I want hybrid" overwrites "remote only" instead of contradicting it. In testing, facts given in one thread were applied as filters (`remote=true`) in a new one.
+
+**Streaming** (`POST /chat`, SSE): `token`, `tool_call`, `tool_result`, `retract`, then `final` (answer, cited ids, token usage, latency) or `error` (`rate_limited` / `failed`).
+
+**Testing without the network.** `build_graph` accepts an injected chat model, tools and context loader. `tests/test_agent_graph.py` runs the *real* graph with a scripted model, in-memory checkpointer and store. It covers the tool loop, citation retract/retry, striking out repeated hallucinations, tool-error recovery, thread memory and isolation, and the tool budget. The Layer 5 agent evals will reuse the same seam.
+
+**Model**: `AGENT_MODEL` (default `gemini-3.5-flash-lite`) is separate from `LLM_MODEL` (`gemini-2.5-flash`, used for profile extraction and explanations). The agent makes 2–3 LLM calls per turn, and the free tier for `gemini-2.5-flash` is 20 requests/day. A typical turn is ~2.5–5k input tokens and 1.5–15 s, depending on which tools run.
+
 ## Next up
-Layer 4: LangGraph career agent with tools over search, recommendations and the profile.
+Layer 5: agent evals (tool-choice accuracy on scripted scenarios, groundedness judge) in CI, cost and failure rates.
