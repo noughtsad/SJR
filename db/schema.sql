@@ -118,3 +118,40 @@ CREATE TABLE IF NOT EXISTS corpus_stats (
 
 -- posts screened out as not-a-job (e.g. candidate self-promotion in HN threads)
 ALTER TABLE ingestion_runs ADD COLUMN IF NOT EXISTS rejected INT NOT NULL DEFAULT 0;
+
+-- ---------------------------------------------------------------------------
+-- Layer 3: users, resume-derived profiles, feedback, cached explanations.
+-- users.id is a caller-chosen handle (no auth in this demo).
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS users (
+    id          TEXT PRIMARY KEY,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS user_profiles (
+    user_id      TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    profile      JSONB NOT NULL,        -- app.profile.models.CandidateProfile
+    resume_text  TEXT  NOT NULL,
+    version      INT   NOT NULL DEFAULT 1,  -- bumped on every re-upload; invalidates cached explanations
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Latest explicit signal per (user, job). Undo = delete the row.
+CREATE TABLE IF NOT EXISTS user_feedback (
+    user_id     TEXT   NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    job_id      BIGINT NOT NULL REFERENCES jobs(id),
+    action      TEXT   NOT NULL CHECK (action IN ('save', 'dismiss')),
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, job_id)
+);
+
+-- LLM match explanations are cached until either the profile or the posting changes.
+CREATE TABLE IF NOT EXISTS match_explanations (
+    user_id          TEXT   NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    job_id           BIGINT NOT NULL REFERENCES jobs(id),
+    profile_version  INT    NOT NULL,
+    job_hash         TEXT   NOT NULL,
+    explanation      JSONB  NOT NULL,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, job_id)
+);

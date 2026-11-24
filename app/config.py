@@ -30,8 +30,19 @@ class Settings(BaseSettings):
     candidate_pool: int = 50  # how many results each retriever contributes to fusion
     hnsw_ef_search: int = 100
 
-    # Gemini (hosted embeddings now; LLM features in later layers)
+    # Gemini (hosted embeddings, profile extraction, explanations)
     gemini_api_key: str | None = None
+    llm_model: str = "gemini-2.5-flash"
+
+    # Recommendations. Rocchio: q = a*profile + b*mean(saved) - c*mean(dismissed).
+    # 1.0 / 0.75 / 0.15 are the textbook defaults (Manning et al., IIR ch. 9).
+    rocchio_alpha: float = 1.0
+    rocchio_beta: float = 0.75
+    rocchio_gamma: float = 0.15
+    rec_candidates: int = 100  # vector neighbours re-scored per request
+    rec_skill_weight: float = 0.10  # bonus for share of the job's skills the user has
+    rec_seniority_penalty: float = 0.03  # per level of mismatch
+    rec_max_per_company: int = 2
 
     # Ingestion
     remotive_url: str = "https://remotive.com/api/remote-jobs"

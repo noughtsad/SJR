@@ -34,7 +34,7 @@ FROM jobs WHERE id = ANY(%(ids)s)
 """
 
 
-async def _hydrate(pool: AsyncConnectionPool, ids: list[int], doc_chars: int = 2000) -> dict[int, dict]:
+async def hydrate(pool: AsyncConnectionPool, ids: list[int], doc_chars: int = 2000) -> dict[int, dict]:
     async with pool.connection() as conn:
         cur = await conn.execute(_HYDRATE, {"ids": ids, "doc_chars": doc_chars})
         return {r["id"]: r for r in await cur.fetchall()}
@@ -83,7 +83,7 @@ async def search(pool: AsyncConnectionPool, req: SearchRequest) -> SearchRespons
         top_n = s.rerank_top_n if mode is SearchMode.hybrid_rerank else req.k
         ranked = ranked[:top_n]
         with t("hydrate"):
-            rows = await _hydrate(pool, [c.job_id for c in ranked])
+            rows = await hydrate(pool, [c.job_id for c in ranked])
         ranked = [c for c in ranked if c.job_id in rows]  # job could expire between stages
 
         if mode is SearchMode.hybrid_rerank:

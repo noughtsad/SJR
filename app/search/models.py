@@ -18,6 +18,7 @@ class SearchFilters(BaseModel):
     skills: list[str] | None = Field(None, description="job must have at least one")
     posted_within_days: int | None = Field(None, ge=1)
     sources: list[str] | None = None
+    exclude_job_ids: list[int] | None = Field(None, description="e.g. jobs the user already saved or dismissed")
 
 
 class SearchRequest(BaseModel):

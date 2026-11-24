@@ -8,6 +8,10 @@
   python -m app.cli refresh            # ingest live sources + embed (what the cron runs)
   python -m app.cli search "python backend remote" [--mode hybrid] [--remote]
   python -m app.cli stats
+  python -m app.cli profile --user demo --resume examples/resume_data_engineer.md
+  python -m app.cli recommend --user demo [--k 10] [--no-feedback]
+  python -m app.cli feedback --user demo --job 123 --action save|dismiss|clear
+  python -m app.cli explain --user demo --job 123 [--refresh]
 """
 
 import argparse
@@ -127,6 +131,50 @@ async def cmd_stats(_args):
     await _with_pool(go)
 
 
+async def cmd_profile(args):
+    from app.profile.extract import extract_profile, read_resume_file
+    from app.profile.store import get_profile, save_profile
+
+    text = read_resume_file(Path(args.resume))
+
+    async def go(pool):
+        profile = await extract_profile(text)
+        await save_profile(pool, args.user, profile, text)
+        return await get_profile(pool, args.user)
+
+    stored = await _with_pool(go)
+    print(json.dumps(stored.model_dump(), indent=2))
+
+
+async def cmd_recommend(args):
+    from app.recommend.service import RecommendRequest, recommend
+
+    req = RecommendRequest(user_id=args.user, k=args.k, use_feedback=not args.no_feedback)
+    resp = await _with_pool(lambda p: recommend(p, req))
+    print(f"profile v{resp.profile_version}  feedback={resp.feedback_used}  "
+          f"query_shift={resp.query_shift}  timings_ms={resp.timings_ms}\n")  # fmt: skip
+    for i, r in enumerate(resp.results, 1):
+        cov = "-" if r.skill_coverage is None else f"{r.skill_coverage:.0%}"
+        print(f"{i:>2}. [{r.job_id}] {r.title} | {r.company} | {r.location} [{r.seniority or '-'}]")
+        print(f"    score={r.score:.3f} sim={r.similarity:.3f} skills={cov} gap={r.seniority_gap}"
+              f"  has={r.matched_skills[:6]} missing={r.missing_skills[:6]}")  # fmt: skip
+
+
+async def cmd_feedback(args):
+    from app.profile.store import set_feedback
+
+    action = None if args.action == "clear" else args.action
+    await _with_pool(lambda p: set_feedback(p, args.user, args.job, action))
+    print(f"{args.user}: job {args.job} -> {args.action}")
+
+
+async def cmd_explain(args):
+    from app.recommend.explain import explain
+
+    e = await _with_pool(lambda p: explain(p, args.user, args.job, refresh=args.refresh))
+    print(json.dumps(e.model_dump(), indent=2))
+
+
 def main():
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     p = argparse.ArgumentParser(prog="app.cli")
@@ -160,6 +208,25 @@ def main():
     sub.add_parser("stats")
     sub.add_parser("refresh-stats", help="recompute keyword-search document frequencies")
 
+    pp = sub.add_parser("profile", help="extract a profile from a resume (.pdf/.md/.txt)")
+    pp.add_argument("--user", required=True)
+    pp.add_argument("--resume", required=True)
+
+    prec = sub.add_parser("recommend")
+    prec.add_argument("--user", required=True)
+    prec.add_argument("--k", type=int, default=10)
+    prec.add_argument("--no-feedback", action="store_true")
+
+    pf = sub.add_parser("feedback")
+    pf.add_argument("--user", required=True)
+    pf.add_argument("--job", type=int, required=True)
+    pf.add_argument("--action", choices=["save", "dismiss", "clear"], required=True)
+
+    px = sub.add_parser("explain")
+    px.add_argument("--user", required=True)
+    px.add_argument("--job", type=int, required=True)
+    px.add_argument("--refresh", action="store_true")
+
     args = p.parse_args()
     if args.cmd == "init-db":
         run(init_db())
@@ -168,6 +235,7 @@ def main():
     handler = {
         "ingest": cmd_ingest, "embed": cmd_embed, "refresh": cmd_refresh,
         "search": cmd_search, "stats": cmd_stats, "refresh-stats": cmd_refresh_stats,
+        "profile": cmd_profile, "recommend": cmd_recommend, "feedback": cmd_feedback, "explain": cmd_explain,
     }[args.cmd]  # fmt: skip
     run(handler(args))
 

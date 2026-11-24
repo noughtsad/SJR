@@ -26,4 +26,7 @@ def build_filters(f: SearchFilters) -> tuple[sql.Composable, dict]:
     if f.sources:
         clauses.append(sql.SQL("j.source = ANY(%(f_sources)s)"))
         params["f_sources"] = f.sources
+    if f.exclude_job_ids:
+        clauses.append(sql.SQL("NOT (j.id = ANY(%(f_exclude)s))"))
+        params["f_exclude"] = f.exclude_job_ids
     return sql.SQL(" AND ").join(clauses), params

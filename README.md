@@ -6,10 +6,10 @@ Semantic job search and recommendation over a continuously changing jobs index, 
 |---|---|
 | 1. Ingestion + changing index (Postgres + pgvector) | ✅ |
 | 2. Search: keyword → vector → hybrid (RRF) → cross-encoder rerank | ✅ |
-| 3. Resume profile, feedback loop, explanations | ⏳ |
+| 3. Resume profile, feedback loop, grounded explanations | ✅ |
 | 4. LangGraph career agent (tools, memory) | ⏳ |
 | 5. Retrieval + agent evals in CI | ⏳ |
-| 6. Production hardening, tracing, Next.js UI | partial (FastAPI, Docker, `/health`, query cache) |
+| 6. Production hardening, tracing, Next.js UI | partial (FastAPI, Docker, `/health`, `/search`, `/recommend`, `/feedback`, query cache) |
 
 ## Quickstart
 
@@ -26,9 +26,19 @@ python -m app.cli ingest kaggle --path data/postings.csv --limit 20000   # optio
 python -m app.cli embed                       # embeds only new/changed jobs
 python -m app.cli search "LLM agents and retrieval in python" --mode hybrid_rerank
 python -m app.serve                           # API on :8000  (docs at /docs)
+
+# personalised recommendations (needs GEMINI_API_KEY in .env)
+python -m app.cli profile --user demo --resume examples/resume_data_engineer.md
+python -m app.cli recommend --user demo
+python -m app.cli feedback --user demo --job <id> --action save      # or dismiss / clear
+python -m app.cli explain --user demo --job <id>
 ```
 
-API: `GET /search?q=...&mode=hybrid_rerank&remote=true&seniority=senior`, `POST /search` (JSON body), `GET /health`.
+API:
+- `GET /search?q=...&mode=hybrid_rerank&remote=true&seniority=senior`, `POST /search` (JSON body), `GET /health`
+- `POST /users/{id}/resume` (multipart PDF/MD/TXT → profile), `GET /users/{id}/profile`
+- `POST /recommend` `{"user_id": "demo", "k": 10}`, `POST /feedback` `{"user_id", "job_id", "action": "save"|"dismiss"|null}`
+- `GET /users/{id}/jobs/{job_id}/explain`
 
 ## Architecture
 
@@ -125,5 +135,32 @@ python -m app.evals.run --models bge-small minilm gemini   # compare embedding m
 
 GPU vs CPU (i7-12650H): embedding 417 vs ~7 docs/s, rerank of 30 docs 58 ms vs ~1 s.
 
+## Recommendations (Layer 3)
+
+```
+ resume (PDF/MD) ─► Gemini ─► CandidateProfile (Pydantic, validated, retried on bad output)
+                                   │  written in the shape of a job posting, embedded as a document
+                                   ▼
+ saved / dismissed jobs ──► Rocchio: q = 1.0·profile + 0.75·mean(saved) − 0.15·mean(dismissed)
+                                   ▼
+          HNSW search (same index as /search), excluding jobs already acted on
+                                   ▼
+ score = cosine + 0.10·skill overlap − 0.03·seniority gap  →  max 2 per company  →  top k
+                                   ▼
+                    on demand: grounded "why it matches / what's missing"
+```
+
+**Profile extraction.** Gemini fills a strict schema (target roles, seniority, years, skills, domains, remote preference). The prompt forbids inferring skills that aren't written down, wraps the resume in tags marked as untrusted data, and passes today's date. Without the date the model computed 5.5 years instead of 8 for "2022 – present". Free-form skills ("Apache Kafka", "Postgres 14") are mapped onto the same skill dictionary the jobs are tagged with, so overlap compares like with like.
+
+**Profile as a document.** The profile is rendered in the same layout as a job's embedding text (title, seniority, skills, body) and embedded *without* the query prefix. A resume-to-posting match is document-to-document similarity, not a short search query.
+
+**Feedback (Rocchio).** The textbook weights (α=1, β=0.75, γ=0.15) are used. Feedback moves toward the *centroid* of saved jobs, so ten saves of near-identical postings don't pull ten times harder. Dismissals get a smaller weight because "not this one" is noisier than "more like this". Expired jobs still count: their vectors are kept, which is one reason expiry is soft. The response reports `query_shift` (1 − cosine between the original and adjusted vectors), so you can see how much feedback moved the query. In the demo, 2 saves and 2 dismissals shifted it by 0.026, which removed the dismissed ML role and brought Kafka/Kubernetes-heavy data jobs up.
+
+**Re-scoring.** Cosine similarity does most of the work. Skill overlap and seniority fit are small terms that re-order near-ties, and each term is returned per result. Skill overlap uses add-one smoothing: a job tagged with one skill the user has (1/1 → 0.5) shouldn't beat one where they have 5 of 5 (→ 0.83). A per-company cap exists because staffing agencies post the same role many times; before the cap, one agency held 4 of the top 10.
+
+**Grounded explanations.** The LLM must back every "why it matches" reason with a verbatim quote from the posting *and* one from the resume, and every gap with a quote from the posting. The quotes are then checked against the exact text the model saw (case-, whitespace- and quote-insensitive substring match, with ellipsis pieces matched in order). A claim without evidence is dropped and listed in `dropped`. A gap naming a skill the profile already has is dropped as a contradiction. Explanations are cached per (user, job) and invalidated when either the profile version or the posting's `content_hash` changes.
+
+**Latency** (warm, RTX 3070, 19.4k jobs): profile embedding ~17 ms, vector search ~5 ms, **total ~28 ms**. An explanation is one Gemini call (a few seconds, then cached).
+
 ## Next up
-Layer 3: resume → profile, feedback-driven personalisation, grounded match explanations.
+Layer 4: LangGraph career agent with tools over search, recommendations and the profile.
