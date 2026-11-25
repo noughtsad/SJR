@@ -21,6 +21,7 @@ from langgraph.store.postgres import AsyncPostgresStore
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
 
+from app import tracing
 from app.agent.graph import _text, build_graph, cited_job_ids
 from app.config import get_settings
 
@@ -75,6 +76,9 @@ def _usage(messages) -> dict:
 
 async def chat_stream(graph, user_id: str, thread_id: str, text: str) -> AsyncIterator[dict]:
     config = thread_config(user_id, thread_id)
+    callbacks, metadata = tracing.agent_callbacks(user_id, thread_id)  # ([], {}) unless Langfuse is configured
+    if callbacks:
+        config = {**config, "callbacks": callbacks, "metadata": metadata}
     t0 = time.perf_counter()
     turn_msgs = []  # every AI/tool message produced in this turn, for usage accounting
     inp = {"messages": [HumanMessage(text)], "citation_retries": 0}

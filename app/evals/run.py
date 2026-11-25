@@ -54,9 +54,7 @@ async def _coverage(pool, model: str) -> tuple[int, int]:
 
 
 async def evaluate(models: list[str], modes: list[SearchMode], limit: int | None) -> dict:
-    queries: list[EvalQuery] = (
-        load(SYNTHETIC_PATH) + load(JUDGED_PATH) + [q for q in load(HANDLABELED_PATH) if q.qrels]
-    )
+    queries: list[EvalQuery] = load(SYNTHETIC_PATH) + load(JUDGED_PATH) + [q for q in load(HANDLABELED_PATH) if q.qrels]
     if limit:
         queries = queries[:limit]
     pool = make_pool()
@@ -85,9 +83,7 @@ async def evaluate(models: list[str], modes: list[SearchMode], limit: int | None
             label = mode.value if model is None else f"{mode.value} [{model}]"
             print(f"running {label} on {len(usable)} queries")
             for q in usable:
-                resp = await search(
-                    pool, SearchRequest(query=q.query, mode=mode, k=K, model=model, filters=q.filters)
-                )
+                resp = await search(pool, SearchRequest(query=q.query, mode=mode, k=K, model=model, filters=q.filters))
                 # Unknown ids (e.g. jobs inserted after labelling) map to themselves: non-relevant.
                 ranked = [key_by_id.get(h.job_id, f"id:{h.job_id}") for h in resp.results]
                 per_query.append(

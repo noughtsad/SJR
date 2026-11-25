@@ -9,7 +9,7 @@ Semantic job search and recommendation over a continuously changing jobs index, 
 | 3. Resume profile, feedback loop, grounded explanations | ✅ |
 | 4. LangGraph career agent (tools, memory, streaming) | ✅ |
 | 5. Retrieval + agent evals in CI | ✅ |
-| 6. Production hardening, tracing, Next.js UI | partial (FastAPI, Docker, `/health`, `/search`, `/recommend`, `/feedback`, query cache) |
+| 6. Production hardening, tracing, Next.js UI | ✅ (deployment pending) |
 
 ## Quickstart
 
@@ -233,5 +233,30 @@ LLM_RPM=14 python -m app.evals.agent_eval --ci       # agent: 36 scenarios, tool
 
 **In CI** ([`ci.yml`](.github/workflows/ci.yml)): `test` runs lint, unit tests and the offline agent-graph tests on every push. `evals` loads the corpus and runs the retrieval gate on every push and PR. The agent eval runs on `main`, manual and weekly runs when the `GEMINI_API_KEY` secret is set. It is skipped on PRs and forks so free-tier quota and secrets stay safe. Reports are uploaded as build artifacts.
 
-## Next up
-Layer 6: rate limiting and structured logs on the API, Langfuse tracing, a minimal Next.js UI, deployment.
+## Production basics (Layer 6)
+
+```bash
+python -m app.serve                         # API on :8000
+cd web && npm install && npm run dev        # UI on :3000 (NEXT_PUBLIC_API_URL defaults to localhost:8000)
+docker compose --profile api up --build     # or everything in containers: db + api + web
+```
+
+**UI** (`web/`, Next.js 16, no UI framework): one page with three tabs.
+- *Search*: mode switcher (keyword / vector / hybrid / hybrid+rerank), each result's keyword and vector rank and rerank score, and per-stage latency, so the retrieval pipeline is visible.
+- *For you*: resume upload → extracted profile and skills → recommendations with ✓ matched / ✗ missing skill chips. Save and "Not for me" re-rank immediately; the page shows how far the query moved. "Why?" shows the grounded explanation with its quotes.
+- *Career agent*: streams tokens and tool calls over SSE (`fetch` plus a hand-written parser, because `EventSource` can't POST). A citation-guard `retract` discards the streamed draft. `[job N]` citations become chips that open the real posting.
+
+**API hardening**
+- *Request ids and structured logs*: every response carries `x-request-id` (taken from the caller or generated). `LOG_FORMAT=json` emits one JSON object per line with `request_id`, method, path, status, `duration_ms` and client. All log lines of a request share the id.
+- *Rate limiting*: in-process token buckets per client IP and route class. 120/min by default; 10/min for endpoints that spend LLM quota (`/chat`, resume upload, explain). Exceeding the limit returns 429 with `Retry-After`. One instance only; several replicas would need Redis. `TRUST_PROXY` reads `X-Forwarded-For` only when you are behind your own proxy.
+- *Timeouts*: `/search` and `/recommend` are bounded at 15 s (504). The API's Postgres pool sets `statement_timeout=10s`. CLI jobs (ingest, index builds) use an unbounded pool on purpose.
+- *Caching*: identical `/search` requests come from a 60 s TTL LRU (`x-cache: hit`, ~1 ms vs ~50–900 ms). Query embeddings have their own LRU, and match explanations are cached in Postgres until the profile or posting changes.
+- *Retries*: Gemini calls retry 429/5xx and invalid structured output (tenacity). The agent node retries transient errors via LangGraph `RetryPolicy`. A shared `LLM_RPM` limiter keeps all LLM calls under the provider quota.
+- The middleware is plain ASGI, so streamed `/chat` responses pass through unbuffered.
+
+**Tracing (Langfuse, optional).** Set `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` to enable it; without them every tracing call is a no-op.
+- Each agent turn becomes one trace, with spans for every graph node, tool call and Gemini call (tokens, latency), tagged with the user and with the thread as the Langfuse session.
+- Direct Gemini calls (profile extraction, explanations, the eval judge) are recorded as generations with token usage. A schema-validation failure is marked as a warning.
+
+## Deployment
+Not deployed yet. The API needs ~1.5 GB RAM (PyTorch plus two small models), which rules out 512 MB free tiers. Planned: Postgres with pgvector on Supabase or Neon, the API container on a host with ≥2 GB, and the UI on Vercel. `refresh-index.yml` then keeps the hosted index fresh.

@@ -96,8 +96,14 @@ async def search(pool: AsyncConnectionPool, req: SearchRequest) -> SearchRespons
         results.append(
             JobHit(
                 **c.model_dump(),
-                title=r["title"], company=r["company"], location=r["location"], is_remote=r["is_remote"],
-                seniority=r["seniority"], skills=r["skills"], url=r["url"], posted_at=r["posted_at"],
+                title=r["title"],
+                company=r["company"],
+                location=r["location"],
+                is_remote=r["is_remote"],
+                seniority=r["seniority"],
+                skills=r["skills"],
+                url=r["url"],
+                posted_at=r["posted_at"],
                 snippet=" ".join(r["doc"].split())[:280],
             )  # fmt: skip
         )

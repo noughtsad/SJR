@@ -30,6 +30,7 @@ from statistics import mean
 from langchain_core.messages import HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
 
+from app import tracing
 from app.agent.graph import _text
 from app.agent.memory import put_fact
 from app.agent.runtime import agent_runtime, chat_stream, thread_config
@@ -364,6 +365,7 @@ def main():
         scenarios = [sc for sc in scenarios if sc.category in set(a.category)]
     judge_model = a.judge_model or s.judge_model
     results = run(run_eval(scenarios, judge_model, not a.no_judge))
+    tracing.flush()
     sm = summarise(results)
     when = datetime.now(UTC).strftime("%Y-%m-%dT%H%M%SZ")
     meta = {"when": when, "agent_model": s.agent_model or s.llm_model, "judge_model": judge_model}

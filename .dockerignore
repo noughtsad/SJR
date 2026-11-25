@@ -1,0 +1,7 @@
+.venv
+.git
+data
+web
+evals/results/*.json
+__pycache__
+.env

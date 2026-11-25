@@ -71,8 +71,20 @@ async def embed_pending(pool: AsyncConnectionPool, model_key: str | None = None,
         texts = [
             embedding_text(
                 JobPosting.model_construct(
-                    **{k: r[k] for k in ("source", "external_id", "title", "company", "location",
-                                         "is_remote", "seniority", "skills", "description")}  # fmt: skip
+                    **{
+                        k: r[k]
+                        for k in (
+                            "source",
+                            "external_id",
+                            "title",
+                            "company",
+                            "location",
+                            "is_remote",
+                            "seniority",
+                            "skills",
+                            "description",
+                        )
+                    }  # fmt: skip
                 )
             )
             for r in rows

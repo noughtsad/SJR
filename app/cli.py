@@ -1,18 +1,18 @@
 """Command line entry point.
 
-  python -m app.cli init-db
-  python -m app.cli ingest remotive [--from-file data/raw/remotive_x.json]
-  python -m app.cli ingest hn [--months 2]
-  python -m app.cli ingest kaggle --path data/postings.csv --limit 5000
-  python -m app.cli embed [--model bge-small] [--limit N]
-  python -m app.cli refresh            # ingest live sources + embed (what the cron runs)
-  python -m app.cli search "python backend remote" [--mode hybrid] [--remote]
-  python -m app.cli stats
-  python -m app.cli profile --user demo --resume examples/resume_data_engineer.md
-  python -m app.cli recommend --user demo [--k 10] [--no-feedback]
-  python -m app.cli feedback --user demo --job 123 --action save|dismiss|clear
-  python -m app.cli explain --user demo --job 123 [--refresh]
-  python -m app.cli chat --user demo [--thread t1] [-m "one message"]
+python -m app.cli init-db
+python -m app.cli ingest remotive [--from-file data/raw/remotive_x.json]
+python -m app.cli ingest hn [--months 2]
+python -m app.cli ingest kaggle --path data/postings.csv --limit 5000
+python -m app.cli embed [--model bge-small] [--limit N]
+python -m app.cli refresh            # ingest live sources + embed (what the cron runs)
+python -m app.cli search "python backend remote" [--mode hybrid] [--remote]
+python -m app.cli stats
+python -m app.cli profile --user demo --resume examples/resume_data_engineer.md
+python -m app.cli recommend --user demo [--k 10] [--no-feedback]
+python -m app.cli feedback --user demo --job 123 --action save|dismiss|clear
+python -m app.cli explain --user demo --job 123 [--refresh]
+python -m app.cli chat --user demo [--thread t1] [-m "one message"]
 """
 
 import argparse

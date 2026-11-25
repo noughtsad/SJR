@@ -66,6 +66,24 @@ class Settings(BaseSettings):
     # likely a broken API response than a mass delisting. Below this ratio we skip expiry.
     min_snapshot_ratio: float = 0.5
 
+    # API hardening (Layer 6)
+    log_format: str = "text"  # "json" in containers: one JSON object per line, with request_id
+    log_level: str = "INFO"
+    rate_limit_per_min: int = 120  # per client IP; 0 disables
+    rate_limit_llm_per_min: int = 10  # /chat, resume upload, explain: they spend LLM quota
+    trust_proxy: bool = False  # take the client IP from X-Forwarded-For (only behind your own proxy)
+    request_timeout_s: float = 15.0
+    db_statement_timeout_ms: int = 10_000  # API pool only; CLI jobs (ingest, indexing) are unbounded
+    search_cache_ttl_s: float = 60.0
+    search_cache_size: int = 512
+    cors_origins: list[str] = ["http://localhost:3000"]
+
+    # Langfuse tracing: enabled only when both keys are set
+    langfuse_public_key: str | None = None
+    langfuse_secret_key: str | None = None
+    langfuse_host: str = "https://cloud.langfuse.com"
+    langfuse_environment: str = "development"
+
     @classmethod
     def settings_customise_sources(
         cls, settings_cls, init_settings, env_settings, dotenv_settings, file_secret_settings

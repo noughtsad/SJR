@@ -33,14 +33,17 @@ async def _configure_bootstrap(conn: AsyncConnection) -> None:
     conn.row_factory = dict_row
 
 
-def make_pool(*, bootstrap: bool = False) -> AsyncConnectionPool:
+def make_pool(*, bootstrap: bool = False, statement_timeout_ms: int | None = None) -> AsyncConnectionPool:
     s = get_settings()
+    kwargs: dict = {"autocommit": True}
+    if statement_timeout_ms:
+        kwargs["options"] = f"-c statement_timeout={int(statement_timeout_ms)}"
     return AsyncConnectionPool(
         s.database_url,
         min_size=s.db_pool_min,
         max_size=s.db_pool_max,
         configure=_configure_bootstrap if bootstrap else _configure,
-        kwargs={"autocommit": True},
+        kwargs=kwargs,
         open=False,
     )
 

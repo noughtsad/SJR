@@ -1,11 +1,16 @@
+import asyncio
 import logging
+import time
+from collections import OrderedDict
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Query, Request, UploadFile
+from fastapi import FastAPI, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 
+from app import tracing
 from app.agent.memory import delete_fact, get_facts
 from app.agent.runtime import agent_runtime, chat_stream, thread_config
+from app.api.middleware import RateLimiter, RequestContextMiddleware, setup_logging
 from app.config import get_settings
 from app.db import make_pool
 from app.embeddings.registry import get_embedder
@@ -19,12 +24,48 @@ from app.search.models import SearchFilters, SearchMode, SearchRequest, SearchRe
 from app.search.rerank import warmup as rerank_warmup
 from app.search.service import search
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+settings = get_settings()
+setup_logging(settings.log_format, settings.log_level)
+log = logging.getLogger(__name__)
+
+
+class TTLCache:
+    """Small LRU with expiry for identical /search requests (refreshed index -> stale for <= ttl)."""
+
+    def __init__(self, size: int, ttl_s: float):
+        self.size, self.ttl = size, ttl_s
+        self.data: OrderedDict[str, tuple[float, object]] = OrderedDict()
+
+    def get(self, key: str):
+        hit = self.data.get(key)
+        if not hit or time.monotonic() - hit[0] > self.ttl:
+            self.data.pop(key, None)
+            return None
+        self.data.move_to_end(key)
+        return hit[1]
+
+    def put(self, key: str, value) -> None:
+        self.data[key] = (time.monotonic(), value)
+        self.data.move_to_end(key)
+        while len(self.data) > self.size:
+            self.data.popitem(last=False)
+
+
+search_cache = TTLCache(settings.search_cache_size, settings.search_cache_ttl_s)
+
+
+async def with_timeout(coro, what: str):
+    """Bound request latency; the DB has its own statement_timeout underneath."""
+    try:
+        return await asyncio.wait_for(coro, settings.request_timeout_s)
+    except TimeoutError as e:
+        log.warning("%s timed out after %ss", what, settings.request_timeout_s)
+        raise HTTPException(504, f"{what} timed out") from e
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    pool = make_pool()
+    pool = make_pool(statement_timeout_ms=settings.db_statement_timeout_ms)
     await pool.open()
     app.state.pool = pool
     # load models at startup, not on the first request
@@ -32,11 +73,27 @@ async def lifespan(app: FastAPI):
     rerank_warmup()
     async with agent_runtime(pool) as (graph, store):
         app.state.agent, app.state.store = graph, store
+        log.info("api ready (langfuse tracing %s)", "on" if tracing.enabled() else "off")
         yield
+    tracing.flush()
     await pool.close()
 
 
-app = FastAPI(title="Semantic Job Search", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Semantic Job Search", version="0.4.0", lifespan=lifespan)
+app.add_middleware(
+    RequestContextMiddleware,
+    limiter=RateLimiter(
+        {"default": settings.rate_limit_per_min, "llm": settings.rate_limit_llm_per_min}
+    ) if settings.rate_limit_per_min else None,
+    trust_proxy=settings.trust_proxy,
+)  # fmt: skip
+if settings.cors_origins:
+    from fastapi.middleware.cors import CORSMiddleware
+
+    app.add_middleware(
+        CORSMiddleware, allow_origins=settings.cors_origins, allow_methods=["*"], allow_headers=["*"],
+        expose_headers=["x-request-id", "x-cache"],
+    )  # fmt: skip
 
 MAX_RESUME_BYTES = 5 * 1024 * 1024
 
@@ -67,16 +124,24 @@ async def health(request: Request):
 
 
 @app.post("/search", response_model=SearchResponse)
-async def search_post(req: SearchRequest, request: Request):
+async def search_post(req: SearchRequest, request: Request, response: Response):
+    key = req.model_dump_json()
+    if (cached := search_cache.get(key)) is not None:
+        response.headers["x-cache"] = "hit"
+        return cached
     try:
-        return await search(request.app.state.pool, req)
+        result = await with_timeout(search(request.app.state.pool, req), "search")
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    search_cache.put(key, result)
+    response.headers["x-cache"] = "miss"
+    return result
 
 
 @app.get("/search", response_model=SearchResponse)
 async def search_get(
     request: Request,
+    response: Response,
     q: str = Query(..., min_length=1, max_length=500),
     mode: SearchMode = SearchMode.hybrid_rerank,
     k: int = Query(10, ge=1, le=50),
@@ -90,7 +155,7 @@ async def search_get(
     filters = SearchFilters(
         remote=remote, location=location, seniority=seniority, skills=skills, posted_within_days=posted_within_days
     )
-    return await search_post(SearchRequest(query=q, mode=mode, k=k, model=model, filters=filters), request)
+    return await search_post(SearchRequest(query=q, mode=mode, k=k, model=model, filters=filters), request, response)
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +185,7 @@ async def read_profile(user_id: str, request: Request):
 
 @app.post("/recommend", response_model=RecommendResponse)
 async def recommend_post(req: RecommendRequest, request: Request):
-    return await recommend(request.app.state.pool, req)
+    return await with_timeout(recommend(request.app.state.pool, req), "recommend")
 
 
 class FeedbackRequest(BaseModel):
@@ -190,3 +255,18 @@ async def list_facts(user_id: str, request: Request):
 @app.delete("/users/{user_id}/facts/{key}", status_code=204)
 async def forget_fact(user_id: str, key: str, request: Request):
     await delete_fact(request.app.state.store, user_id, key)
+
+
+@app.get("/jobs/{job_id}")
+async def get_job(job_id: int, request: Request):
+    async with request.app.state.pool.connection() as conn:
+        cur = await conn.execute(
+            """SELECT id, source, title, company, location, is_remote, seniority, employment_type, skills,
+                      salary_min, salary_max, salary_currency, url, posted_at, is_active, description
+               FROM jobs WHERE id = %s""",
+            (job_id,),
+        )
+        row = await cur.fetchone()
+    if not row:
+        raise NotFound(f"no job {job_id}")
+    return row

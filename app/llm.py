@@ -6,6 +6,7 @@ from functools import cache
 from pydantic import BaseModel, ValidationError
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
+from app import tracing
 from app.config import get_settings
 
 DEFAULT_MODEL = "gemini-2.5-flash"
@@ -65,12 +66,17 @@ async def generate_structured[T: BaseModel](
         retry=retry_if_exception(_retryable),
         reraise=True,
     ):
-        with attempt:
+        with attempt, tracing.generation(schema.__name__, model, prompt, system) as gen:
             if limiter := rate_limiter():
                 await limiter.aacquire()
             resp = await _client().aio.models.generate_content(model=model, contents=prompt, config=config)
+            u = resp.usage_metadata
+            usage = {"input": u.prompt_token_count or 0, "output": u.candidates_token_count or 0} if u else None
             try:
-                return schema.model_validate_json(resp.text or "")
+                parsed = schema.model_validate_json(resp.text or "")
             except ValidationError as e:
+                gen.update(output=resp.text, usage_details=usage, level="WARNING", status_message="schema validation")
                 raise LLMOutputError(f"output failed {schema.__name__} validation: {e}") from e
+            gen.update(output=parsed.model_dump(), usage_details=usage)
+            return parsed
     raise AssertionError("unreachable")

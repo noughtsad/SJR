@@ -21,6 +21,10 @@ services:
       DATABASE_URL: postgresql://jobs:jobs@db:5432/jobs
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL:-bge-small}
+      LOG_FORMAT: json
+      LLM_RPM: ${LLM_RPM:-14}
+      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
     ports:
       - "8000:8000"
     volumes:
@@ -29,6 +33,16 @@ services:
       db:
         condition: service_healthy
     profiles: ["api"]   # `docker compose --profile api up` (or run uvicorn locally)
+
+  web:
+    build:
+      context: ./web
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "3000:3000"
+    depends_on: [api]
+    profiles: ["api"]
 
 volumes:
   pgdata:
