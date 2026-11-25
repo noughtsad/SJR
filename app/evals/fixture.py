@@ -3,6 +3,10 @@
   python -m app.evals.fixture build [--distractors 1500]   # from the full local DB
   python -m app.evals.fixture load                         # into an empty DB (CI)
 
+The same format moves the whole index to a hosted DB (e.g. Supabase) without re-embedding:
+  python -m app.evals.fixture build --all --out data/full_index.jsonl.gz
+  DATABASE_URL=<hosted> python -m app.evals.fixture load --path data/full_index.jsonl.gz
+
 It contains every job referenced by the retrieval eval labels, plus a seeded
 random sample of other jobs as distractors, with their bge-small embeddings
 (float16), so CI needs neither the Kaggle dump nor a GPU. Metrics on this
@@ -35,7 +39,7 @@ COLS = [
 ]  # fmt: skip
 
 
-async def build(distractors: int, model_key: str) -> None:
+async def build(distractors: int, model_key: str, out: Path = FIXTURE_PATH) -> None:
     spec = get_spec(model_key)
     keys = {k for path in (SYNTHETIC_PATH, JUDGED_PATH, HANDLABELED_PATH) for q in load(path) for k in q.qrels}
     pairs = [k.split(":", 1) for k in keys]
@@ -62,8 +66,8 @@ async def build(distractors: int, model_key: str) -> None:
     finally:
         await pool.close()
 
-    FIXTURE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with gzip.open(FIXTURE_PATH, "wt", encoding="utf-8") as f:
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with gzip.open(out, "wt", encoding="utf-8") as f:
         f.write(json.dumps({"model": spec.key, "dim": spec.dim}) + "\n")
         for r in rows:
             d = {c: r[c] for c in COLS}
@@ -71,13 +75,13 @@ async def build(distractors: int, model_key: str) -> None:
             d["embedding"] = base64.b64encode(r["emb"].to_numpy().astype(np.float16).tobytes()).decode()
             f.write(json.dumps(d, default=str) + "\n")
     found = sum(1 for r in rows if f"{r['source']}:{r['external_id']}" in keys)
-    print(f"wrote {len(rows)} jobs ({found}/{len(keys)} labelled, rest distractors) -> {FIXTURE_PATH}")
-    print(f"size: {FIXTURE_PATH.stat().st_size / 1e6:.1f} MB")
+    print(f"wrote {len(rows)} jobs ({found}/{len(keys)} labelled, rest distractors) -> {out}")
+    print(f"size: {out.stat().st_size / 1e6:.1f} MB")
 
 
-async def load_fixture() -> None:
+async def load_fixture(path: Path = FIXTURE_PATH) -> None:
     await init_db()
-    with gzip.open(FIXTURE_PATH, "rt", encoding="utf-8") as f:
+    with gzip.open(path, "rt", encoding="utf-8") as f:
         header = json.loads(f.readline())
         rows = [json.loads(line) for line in f]
     spec = get_spec(header["model"])
@@ -118,9 +122,15 @@ def main():
     b = sub.add_parser("build")
     b.add_argument("--distractors", type=int, default=1500)
     b.add_argument("--model", default="bge-small")
-    sub.add_parser("load")
+    b.add_argument("--all", action="store_true", help="every active job (for moving the index to a hosted DB)")
+    b.add_argument("--out", type=Path, default=FIXTURE_PATH)
+    ld = sub.add_parser("load")
+    ld.add_argument("--path", type=Path, default=FIXTURE_PATH)
     a = p.parse_args()
-    run(build(a.distractors, a.model) if a.cmd == "build" else load_fixture())
+    if a.cmd == "build":
+        run(build(10**9 if a.all else a.distractors, a.model, a.out))
+    else:
+        run(load_fixture(a.path))
 
 
 if __name__ == "__main__":

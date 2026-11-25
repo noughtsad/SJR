@@ -9,3 +9,4 @@ data/*.csv
 data/archive/
 data/*.zip
 evals/results/*.json
+data/*.gz

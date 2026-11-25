@@ -50,7 +50,9 @@ async def agent_runtime(app_pool: AsyncConnectionPool):
         saver, store = AsyncPostgresSaver(mem_pool), AsyncPostgresStore(mem_pool)
         await saver.setup()  # idempotent migrations
         await store.setup()
-        yield build_graph(app_pool, saver, store), store
+        # Without an LLM key the API still serves search and recommendations; only the agent is off.
+        graph = build_graph(app_pool, saver, store) if s.gemini_api_key else None
+        yield graph, store
     finally:
         await mem_pool.close()
 

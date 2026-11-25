@@ -1,0 +1,35 @@
+name: deploy-hf
+
+# Pushes the API to a Hugging Face Space (Docker SDK) on every change to main.
+# Needs GitHub secrets: HF_TOKEN (write token) and HF_SPACE (e.g. "noughtsad/sjr-api").
+on:
+  push:
+    branches: [main]
+    paths: ["app/**", "db/**", "requirements.txt", "deploy/hf/**", ".github/workflows/deploy-hf.yml"]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assemble Space contents
+        run: |
+          mkdir space
+          cp -r app db requirements.txt space/
+          cp deploy/hf/Dockerfile deploy/hf/README.md space/
+          find space -name __pycache__ -prune -exec rm -rf {} +
+      - name: Push to the Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_SPACE: ${{ secrets.HF_SPACE }}
+        run: |
+          if [ -z "$HF_TOKEN" ] || [ -z "$HF_SPACE" ]; then echo "::notice::HF_TOKEN / HF_SPACE secrets not set; skipping deploy (see DEPLOY.md)"; exit 0; fi
+          cd space
+          git init -q -b main
+          git config user.email "ci@github.actions"
+          git config user.name "github-actions"
+          git add -A
+          git commit -q -m "deploy ${GITHUB_SHA::7}"
+          git push --force "https://user:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE}" main

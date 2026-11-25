@@ -73,7 +73,10 @@ async def lifespan(app: FastAPI):
     rerank_warmup()
     async with agent_runtime(pool) as (graph, store):
         app.state.agent, app.state.store = graph, store
-        log.info("api ready (langfuse tracing %s)", "on" if tracing.enabled() else "off")
+        log.info(
+            "api ready (agent %s, langfuse tracing %s)",
+            "on" if graph else "off: GEMINI_API_KEY not set", "on" if tracing.enabled() else "off",
+        )  # fmt: skip
         yield
     tracing.flush()
     await pool.close()
@@ -223,8 +226,12 @@ async def chat(req: ChatRequest, request: Request):
 
     from fastapi.responses import StreamingResponse
 
+    agent = request.app.state.agent
+    if agent is None:
+        raise HTTPException(503, "the career agent is disabled: GEMINI_API_KEY is not configured")
+
     async def events():
-        async for ev in chat_stream(request.app.state.agent, req.user_id, req.thread_id, req.message):
+        async for ev in chat_stream(agent, req.user_id, req.thread_id, req.message):
             yield f"event: {ev['type']}\ndata: {json.dumps(ev, ensure_ascii=False, default=str)}\n\n"
 
     return StreamingResponse(events(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
@@ -237,6 +244,8 @@ async def chat_history(user_id: str, thread_id: str, request: Request):
 
     from app.agent.graph import _text
 
+    if request.app.state.agent is None:
+        return {"thread_id": thread_id, "messages": []}
     state = await request.app.state.agent.aget_state(thread_config(user_id, thread_id))
     out = []
     for m in (state.values or {}).get("messages", []):
