@@ -155,3 +155,22 @@ CREATE TABLE IF NOT EXISTS match_explanations (
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, job_id)
 );
+
+-- ---------------------------------------------------------------------------
+-- Row-level security on every table in public, with no policies.
+-- Hosted Postgres like Supabase exposes the public schema over an HTTP API to
+-- its anon/authenticated roles; without RLS anyone holding the (public) anon key
+-- could read or write these tables, resumes included. The app connects as the
+-- table owner / a BYPASSRLS role, so it is unaffected. Runs on every init-db, so
+-- tables created later (e.g. by LangGraph's checkpointer) are covered too.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE t record;
+BEGIN
+    FOR t IN
+        SELECT c.relname FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' AND c.relkind = 'r' AND NOT c.relrowsecurity
+    LOOP
+        EXECUTE format('ALTER TABLE public.%I ENABLE ROW LEVEL SECURITY', t.relname);
+    END LOOP;
+END $$;

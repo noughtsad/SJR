@@ -65,13 +65,27 @@ export default function Chat({ user }: { user: string }) {
     try {
       localStorage.setItem(`sjr-thread-${user}`, thread);
     } catch {}
+    // Load the thread's history, but never overwrite messages sent while the request was in
+    // flight (a fast first message after "New conversation" was being wiped), and drop the
+    // response if the user or thread changed meanwhile.
+    let stale = false;
+    setMsgs([]);
     fetch(`${API}/chat/${encodeURIComponent(user)}/${thread}`)
       .then((r) => (r.ok ? r.json() : { messages: [] }))
-      .then((d) => setMsgs(d.messages))
-      .catch(() => setMsgs([]));
+      .then((d) => {
+        if (!stale) setMsgs((prev) => (prev.length ? prev : d.messages));
+      })
+      .catch(() => {});
+    return () => {
+      stale = true;
+    };
   }, [user, thread]);
 
-  useEffect(() => bottom.current?.scrollIntoView({ behavior: "smooth" }), [msgs, draft]);
+  // Braces matter: newer Chromium returns a Promise from scrollIntoView, and a value returned
+  // from an effect is treated as its cleanup function ("destroy is not a function").
+  useEffect(() => {
+    bottom.current?.scrollIntoView({ behavior: "smooth" });
+  }, [msgs, draft]);
 
   async function openJob(id: number) {
     const r = await fetch(`${API}/jobs/${id}`);

@@ -26,6 +26,20 @@ Semantic job search and recommendation over a continuously changing jobs index, 
 | Index | ~19.4k live postings, refreshed 3× a day |
 | Search latency, local GPU (p50) | vector 13 ms · hybrid 56 ms · hybrid + rerank 107 ms |
 
+## Screenshots
+
+**Search**: hybrid + rerank, with each result's keyword rank, vector rank and rerank score, and per-stage latency (Cloud Run CPU, warm).
+
+![Search tab](docs/screenshots/search.png)
+
+**For you**: profile extracted from the sample resume, recommendations with matched (✓) and missing (✗) skills, feedback buttons and "Why?" explanations.
+
+![For you tab](docs/screenshots/for_you.png)
+
+**Career agent**: the streamed answer shows the tool call it made; `job 714` is a citation that opens the real posting.
+
+![Career agent tab](docs/screenshots/agent.png)
+
 ## In plain English
 
 *What is it?* A job search website that understands what you mean, not just the words you type, plus an assistant you can chat with about your job hunt.
