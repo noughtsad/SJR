@@ -1,0 +1,9 @@
+# Uploaded by `gcloud run deploy --source .`: only what the Dockerfile needs
+*
+!Dockerfile
+!requirements.txt
+!app/
+!app/**
+!db/
+!db/**
+**/__pycache__/

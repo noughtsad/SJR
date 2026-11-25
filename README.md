@@ -259,7 +259,7 @@ docker compose --profile api up --build     # or everything in containers: db + 
 - Direct Gemini calls (profile extraction, explanations, the eval judge) are recorded as generations with token usage. A schema-validation failure is marked as a warning.
 
 ## Deployment
-Supabase (Postgres + pgvector) → Hugging Face Space (API container, models baked into the image) → Vercel (UI). Step-by-step in [DEPLOY.md](DEPLOY.md).
-- `deploy-hf.yml` pushes the API to the Space on every change to `main`.
+Supabase (Postgres + pgvector) → Google Cloud Run (API container, models baked into the image, scales to zero) → Vercel (UI). Step-by-step in [DEPLOY.md](DEPLOY.md).
+- `deploy-cloudrun.yml` rebuilds and redeploys the API on every API change to `main`.
 - `refresh-index.yml` keeps the hosted index fresh 3× a day.
 - The local index moves to Supabase without re-embedding: `fixture build --all` exports jobs plus vectors, and `fixture load` imports them.
