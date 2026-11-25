@@ -36,7 +36,7 @@ A cold start, the first request after the service has scaled to zero, takes ~20�
 
 ```bash
 PROJECT=sjr-api-<suffix>          # globally unique
-REGION=us-central1                # a free-tier region
+REGION=asia-northeast1            # SAME metro as your Supabase project (see notes below)
 gcloud projects create $PROJECT
 gcloud billing projects link $PROJECT --billing-account=<BILLING_ACCOUNT_ID>
 gcloud config set project $PROJECT
@@ -52,11 +52,13 @@ done
 
 # First deploy: Cloud Build builds the Dockerfile (~10 min), then the service is created
 gcloud run deploy sjr-api --source . --region $REGION --allow-unauthenticated \
-  --memory 2Gi --cpu 1 --cpu-boost --min-instances 0 --max-instances 1 --timeout 300 \
+  --memory 2Gi --cpu 2 --cpu-boost --min-instances 0 --max-instances 1 --timeout 300 \
   --set-secrets DATABASE_URL=database-url:latest,GEMINI_API_KEY=gemini-api-key:latest \
-  --set-env-vars "^@^LLM_MODEL=gemini-3.5-flash-lite@LLM_RPM=14@DB_POOL_MAX=5@TRUST_PROXY=true@CORS_ORIGINS=[\"http://localhost:3000\"]"
+  --set-env-vars "^@^LLM_MODEL=gemini-3.5-flash-lite@LLM_RPM=14@DB_POOL_MAX=5@TRUST_PROXY=true@OMP_NUM_THREADS=2@MKL_NUM_THREADS=2@RERANK_TOP_N=20@RERANK_MAX_TOKENS=256@CORS_ORIGINS=[\"http://localhost:3000\"]"
 ```
 
+- **Put the API in the same metro as the database.** One search makes several round trips to Postgres. With Supabase in Tokyo and the API in Iowa, each took ~150 ms and a search took 10+ s; in the same metro they are ~1–2 ms. Pairs: Supabase `ap-northeast-1` ↔ Cloud Run `asia-northeast1`, `us-east-1` ↔ `us-east4`, `eu-central-1` ↔ `europe-west3`.
+- `--cpu 2` with `OMP_NUM_THREADS=2`: containers often see the host's core count, and PyTorch then oversubscribes threads; the cross-encoder took ~8 s per query on 1 vCPU. Reranking the top 20 at 256 tokens (instead of 30 at 384) costs little quality and halves the work.
 - `--max-instances 1` keeps the in-process rate limiter exact and puts a hard ceiling on cost.
 - `--timeout 300` lets streamed `/chat` responses finish.
 - `^@^` switches the env-var separator so the JSON list in `CORS_ORIGINS` can contain commas.
@@ -66,7 +68,8 @@ Check `https://<service-url>/health` (about 19k active jobs) and `/docs`.
 **Keep the image store small** (stays near the free 0.5 GB):
 ```bash
 gcloud artifacts repositories set-cleanup-policies cloud-run-source-deploy --location=$REGION \
-  --policy=<(echo '[{"name":"keep-2","action":{"type":"Keep"},"mostRecentVersions":{"keepCount":2}}]')
+  --no-dry-run --policy=<(echo '[{"name":"keep-2","action":{"type":"Keep"},"mostRecentVersions":{"keepCount":2}},
+    {"name":"delete-old","action":{"type":"Delete"},"condition":{"tagState":"ANY","olderThan":"1d"}}]')
 ```
 
 **Continuous deploys from GitHub** (`deploy-cloudrun.yml`). Create a deployer service account and add its key as a GitHub secret:
@@ -87,7 +90,7 @@ After that, every push to `main` that touches the API rebuilds and redeploys it.
 2. Environment variable `NEXT_PUBLIC_API_URL` = the Cloud Run service URL.
 3. Deploy, then allow the UI's origin on the API:
    ```bash
-   gcloud run services update sjr-api --region us-central1 \
+   gcloud run services update sjr-api --region asia-northeast1 \
      --update-env-vars "^@^CORS_ORIGINS=[\"https://<your-app>.vercel.app\",\"http://localhost:3000\"]"
    ```
 
