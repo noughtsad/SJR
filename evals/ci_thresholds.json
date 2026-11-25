@@ -1,0 +1,16 @@
+{
+  "_comment": "Floors for CI. Baseline on the CI corpus (2,170 jobs) minus ~0.04 for CPU/GPU numeric drift. Raise them when quality improves.",
+  "retrieval": {
+    "keyword|synthetic": {"ndcg@10": 0.69},
+    "vector [bge-small]|synthetic": {"ndcg@10": 0.82, "recall@10": 0.87},
+    "hybrid_rerank [bge-small]|synthetic": {"ndcg@10": 0.88, "recall@10": 0.91},
+    "vector [bge-small]|judged": {"ndcg@10": 0.76},
+    "hybrid_rerank [bge-small]|judged": {"ndcg@10": 0.77}
+  },
+  "agent": {
+    "turn_pass_rate": 0.80,
+    "tool_selection_accuracy": 0.85,
+    "grounded_rate": 0.90,
+    "error_rate_max": 0.05
+  }
+}

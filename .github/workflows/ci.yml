@@ -1,13 +1,72 @@
 name: ci
-on: [push, pull_request]
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 5 * * 1"   # weekly: catches drift in the hosted LLM even without code changes
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: "3.12", cache: pip }
-      - run: pip install pytest ruff pydantic pydantic-settings beautifulsoup4 psycopg[binary,pool] pgvector numpy httpx tenacity
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements-dev.txt
       - run: ruff check .
+      # unit tests + the real agent graph with a scripted model (no network, no DB)
       - run: pytest -q
+
+  evals:
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      db:
+        image: pgvector/pgvector:pg17
+        env: { POSTGRES_USER: jobs, POSTGRES_PASSWORD: jobs, POSTGRES_DB: jobs }
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U jobs -d jobs" --health-interval 5s --health-timeout 3s --health-retries 20
+    env:
+      DATABASE_URL: postgresql://jobs:jobs@localhost:5432/jobs
+      DEVICE: cpu
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      LLM_MODEL: gemini-3.5-flash-lite
+      LLM_RPM: "14"   # free tier allows 15 requests/min per model
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12", cache: pip }
+      - name: Cache HF models
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ hashFiles('app/embeddings/registry.py', 'app/config.py') }}
+      - run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: pip install -r requirements.txt
+
+      - name: Load CI corpus (2,170 jobs with precomputed embeddings)
+        run: python -m app.evals.fixture load
+
+      - name: Retrieval eval (fails under evals/ci_thresholds.json)
+        run: python -m app.evals.run --ci
+
+      # Needs the GEMINI_API_KEY repo secret; skipped (not failed) without it, e.g. on forks.
+      # Runs on main, manual and weekly runs only, to stay inside free-tier LLM quotas.
+      - name: Agent eval (tool-call accuracy + LLM judge)
+        if: env.GEMINI_API_KEY != '' && (github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || github.event_name == 'schedule')
+        run: python -W ignore -m app.evals.agent_eval --ci
+
+      - name: Upload eval reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results
+          path: |
+            evals/results/*.md
+            evals/results/*.json

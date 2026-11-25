@@ -1,0 +1,42 @@
+{
+  "skills": [
+    "Python",
+    "SQL",
+    "PostgreSQL",
+    "Snowflake",
+    "Redshift",
+    "Apache Kafka",
+    "Apache Spark",
+    "Airflow",
+    "dbt",
+    "AWS",
+    "Terraform",
+    "Docker",
+    "Kubernetes",
+    "Tableau",
+    "pandas",
+    "CI/CD",
+    "data modelling"
+  ],
+  "domains": [
+    "e-commerce",
+    "fintech",
+    "retail",
+    "payments reconciliation"
+  ],
+  "summary": "Data engineer with 6 years of experience building batch and streaming pipelines for e-commerce and fintech. I like owning a platform end to end: ingestion, modelling, orchestration and the dashboards people actually use.",
+  "headline": "Senior Data Engineer, 8 years, Python, SQL, and AWS",
+  "education": [
+    "B.S. Computer Science, University of Texas at Dallas, 2018"
+  ],
+  "locations": [
+    "Austin, TX"
+  ],
+  "seniority": "senior",
+  "target_roles": [
+    "Senior Data Engineer",
+    "Data Engineer"
+  ],
+  "years_experience": 8.0,
+  "remote_preference": "hybrid_or_remote"
+}

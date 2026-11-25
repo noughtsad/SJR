@@ -8,7 +8,7 @@ Semantic job search and recommendation over a continuously changing jobs index, 
 | 2. Search: keyword → vector → hybrid (RRF) → cross-encoder rerank | ✅ |
 | 3. Resume profile, feedback loop, grounded explanations | ✅ |
 | 4. LangGraph career agent (tools, memory, streaming) | ✅ |
-| 5. Retrieval + agent evals in CI | ⏳ |
+| 5. Retrieval + agent evals in CI | ✅ |
 | 6. Production hardening, tracing, Next.js UI | partial (FastAPI, Docker, `/health`, `/search`, `/recommend`, `/feedback`, query cache) |
 
 ## Quickstart
@@ -188,9 +188,50 @@ A hand-written LangGraph `StateGraph` (not the prebuilt ReAct agent), so the gua
 
 **Streaming** (`POST /chat`, SSE): `token`, `tool_call`, `tool_result`, `retract`, then `final` (answer, cited ids, token usage, latency) or `error` (`rate_limited` / `failed`).
 
-**Testing without the network.** `build_graph` accepts an injected chat model, tools and context loader. `tests/test_agent_graph.py` runs the *real* graph with a scripted model, in-memory checkpointer and store. It covers the tool loop, citation retract/retry, striking out repeated hallucinations, tool-error recovery, thread memory and isolation, and the tool budget. The Layer 5 agent evals will reuse the same seam.
+**Testing without the network.** `build_graph` accepts an injected chat model, tools and context loader. `tests/test_agent_graph.py` runs the *real* graph with a scripted model, in-memory checkpointer and store. It covers the tool loop, citation retract/retry, striking out repeated hallucinations, tool-error recovery, thread memory and isolation,, the tool budget and retry of transient model errors. These run on every push without an API key.
 
 **Model**: `AGENT_MODEL` (default `gemini-3.5-flash-lite`) is separate from `LLM_MODEL` (`gemini-2.5-flash`, used for profile extraction and explanations). The agent makes 2–3 LLM calls per turn, and the free tier for `gemini-2.5-flash` is 20 requests/day. A typical turn is ~2.5–5k input tokens and 1.5–15 s, depending on which tools run.
 
+## Evals in CI (Layer 5)
+
+```bash
+python -m app.evals.fixture load                     # CI corpus into an empty DB
+python -m app.evals.run --ci                         # retrieval: fails under evals/ci_thresholds.json
+LLM_RPM=14 python -m app.evals.agent_eval --ci       # agent: 36 scenarios, tool checks + LLM judge
+```
+
+**CI corpus.** CI can't use the 19k-job index, so `evals/fixtures/ci_corpus.jsonl.gz` (4.6 MB) holds every job the retrieval labels point to (670), plus 1,500 seeded-random distractors, with their bge-small vectors stored as float16. CI loads it into a `pgvector` service container in seconds, with no Kaggle download and no GPU. Scores there are higher than on the full index (a 10× smaller haystack), so they serve as a **regression baseline**, not headline numbers. The mode ranking is the same as on the full index ([`ci_latest.md`](evals/results/ci_latest.md)). Floors in [`ci_thresholds.json`](evals/ci_thresholds.json) sit ~0.04 below the baseline to absorb CPU-vs-GPU numeric drift.
+
+**Agent scenarios** ([`scenarios.jsonl`](evals/agent/scenarios.jsonl)): 36 conversations, 41 turns, across search, filters, recommendations, job details and skill gaps, save/dismiss, long-term memory, small talk and a prompt-injection attempt. Each scenario runs as a fresh user with optional setup (resume on file, remembered facts, saved jobs). Two-turn scenarios test references like "save the second one". Each turn declares:
+- `tools` that must be called and `forbid` tools that must not ("hi" must not trigger a search; a search must not save anything);
+- argument checks, e.g. `remote: true`, `seniority_includes: "senior"`, `location_any: ["new york", "ny"]`, `action: "dismiss"`. A remembered fact `work_mode=remote only` must show up as `remote=true` in a new thread;
+- whether the answer should cite jobs.
+
+**LLM judge.** For every answer, a judge gets the user message, every tool result in the conversation so far, and the answer. It returns a schema-validated verdict: `grounded` (every job-specific claim is supported by tool output), a list of unsupported claims, and helpfulness 1–5.
+
+**Results** (CI corpus, agent and judge `gemini-3.5-flash-lite`; [`agent_latest.md`](evals/results/agent_latest.md)):
+
+| Metric | Value |
+|---|---|
+| Turn / scenario pass rate (all deterministic checks) | 100% / 100% |
+| Tool selection · argument · citation-expectation accuracy | 100% · 100% · 100% |
+| Grounded (LLM judge, 40 turns) | 95% |
+| Helpfulness (judge, 1–5) | 4.95 |
+| Error rate · citation-guard retracts | 0% · 0% |
+| LLM calls / tokens per turn | 2.0 calls, ~2.9k in / ~180 out |
+| Est. cost per turn | ~$0.0004 (placeholder flash-lite prices, set in config) |
+| Latency p50 / p95 | 8.7 s / 15.2 s *with free-tier throttling* (see below) |
+
+**What the evals caught** (each led to a fix):
+- *Embellished job descriptions.* The one-line "why it fits" went beyond the 200-character snippet ("focuses on data-driven innovation…"), and "Blend" became "Blend360". The prompt now limits that line to facts from the tool result. One borderline case remains in the final run (a job described as Snowflake work when its snippet doesn't say so).
+- *Padding.* Asked for software engineering roles in Seattle, the agent listed a sales role and a BI role to fill the list. It is now told to drop off-target results.
+- *Transient 503s from Gemini* failed a turn. The agent node now has a LangGraph `RetryPolicy` for 503/429, while other errors fail fast. This is covered by a unit test.
+- *Bugs in the eval itself.* The judge first saw only the current turn's tool output, so "save the second one" answers looked ungrounded; it now sees the whole thread. A scenario demanded citations for Austin data jobs, but the CI corpus has none, and "nothing found" is the correct answer there.
+- *Judge noise is real.* In the final run, one of the two "ungrounded" verdicts contradicts its own reasoning. With ~40 judged turns, a ±1-turn swing is about 2.5 points. The CI floor (90%) leaves room for that.
+
+**Rate limits and latency.** The free tier allows 15 requests/minute per model. A shared limiter (`LLM_RPM`, one token bucket across the agent, extraction, explanations and the judge) spaces calls ~4.3 s apart rather than tripping 429s. The p50/p95 above include those waits. Unthrottled turns took 1–4 s (two model calls plus tools; retrieval is <100 ms).
+
+**In CI** ([`ci.yml`](.github/workflows/ci.yml)): `test` runs lint, unit tests and the offline agent-graph tests on every push. `evals` loads the corpus and runs the retrieval gate on every push and PR. The agent eval runs on `main`, manual and weekly runs when the `GEMINI_API_KEY` secret is set. It is skipped on PRs and forks so free-tier quota and secrets stay safe. Reports are uploaded as build artifacts.
+
 ## Next up
-Layer 5: agent evals (tool-choice accuracy on scripted scenarios, groundedness judge) in CI, cost and failure rates.
+Layer 6: rate limiting and structured logs on the API, Langfuse tracing, a minimal Next.js UI, deployment.

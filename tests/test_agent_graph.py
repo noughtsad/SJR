@@ -32,6 +32,8 @@ class ScriptedModel(BaseChatModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs):
         self.seen.append(list(messages))
         reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
         return ChatResult(generations=[ChatGeneration(message=reply)])
 
 
@@ -143,3 +145,15 @@ def test_tool_budget_forces_an_answer():
     assert sum(e["type"] == "tool_call" for e in events) == 4
     assert events[-1]["cited_job_ids"] == [5]
     assert "Tool budget for this turn is used up" in model.seen[-1][0].content
+
+
+def test_transient_model_error_is_retried():
+    g, _ = _graph([RuntimeError("503 UNAVAILABLE: model overloaded"), AIMessage("Hello!")])
+    events = _turn(g, "hi")
+    assert events[-1]["type"] == "final" and events[-1]["text"] == "Hello!"
+
+
+def test_non_transient_model_error_becomes_error_event():
+    g, _ = _graph([ValueError("400 bad request")])
+    events = _turn(g, "hi")
+    assert events[-1] == {"type": "error", "kind": "failed", "message": "400 bad request"}

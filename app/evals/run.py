@@ -3,6 +3,7 @@
   python -m app.evals.run                                  # bge-small, all modes, all sets
   python -m app.evals.run --models bge-small minilm gemini
   python -m app.evals.run --modes keyword hybrid --limit 10   # quick smoke run
+  python -m app.evals.run --ci             # CI corpus: writes ci_latest.md, fails under evals/ci_thresholds.json
 
 Writes evals/results/<timestamp>.json (per-query detail, for error analysis) and
 evals/results/latest.md (the summary table for the README).
@@ -10,8 +11,10 @@ evals/results/latest.md (the summary table for the README).
 
 import argparse
 import json
+import sys
 from collections import defaultdict
 from datetime import UTC, datetime
+from pathlib import Path
 from statistics import mean
 
 from app.db import make_pool, run
@@ -21,6 +24,21 @@ from app.search.models import SearchMode, SearchRequest
 from app.search.service import search
 
 K = 10
+THRESHOLDS_PATH = Path(__file__).resolve().parents[2] / "evals" / "ci_thresholds.json"
+
+
+def check_thresholds(summary: dict, thresholds: dict[str, dict[str, float]]) -> list[str]:
+    """thresholds: {"hybrid_rerank [bge-small]|synthetic": {"ndcg@10": 0.8}, ...} -> list of failures."""
+    failures = []
+    for group, mins in thresholds.items():
+        got = summary.get(group)
+        if got is None:
+            failures.append(f"{group}: missing from results")
+            continue
+        for metric, floor in mins.items():
+            if got[metric] < floor:
+                failures.append(f"{group} {metric} = {got[metric]:.3f} < {floor:.3f}")
+    return failures
 
 
 async def _coverage(pool, model: str) -> tuple[int, int]:
@@ -139,6 +157,7 @@ def main():
     p.add_argument("--models", nargs="+", default=["bge-small"])
     p.add_argument("--modes", nargs="+", default=[m.value for m in SearchMode], choices=[m.value for m in SearchMode])
     p.add_argument("--limit", type=int)
+    p.add_argument("--ci", action="store_true", help="CI corpus run: ci_latest.md + threshold gate")
     a = p.parse_args()
 
     res = run(evaluate(a.models, [SearchMode(m) for m in a.modes], a.limit))
@@ -156,8 +175,15 @@ def main():
     )
     md = to_markdown(summary, meta)
     if not a.limit:  # don't let a smoke run overwrite the headline table
-        (RESULTS_DIR / "latest.md").write_text(md, encoding="utf-8")
+        (RESULTS_DIR / ("ci_latest.md" if a.ci else "latest.md")).write_text(md, encoding="utf-8")
     print("\n" + md)
+    if a.ci:
+        failures = check_thresholds(summary, json.loads(THRESHOLDS_PATH.read_text(encoding="utf-8"))["retrieval"])
+        for f in failures:
+            print(f"REGRESSION: {f}")
+        if failures:
+            sys.exit(1)
+        print("all retrieval thresholds met")
 
 
 if __name__ == "__main__":

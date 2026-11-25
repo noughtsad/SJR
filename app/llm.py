@@ -31,6 +31,19 @@ def _retryable(e: BaseException) -> bool:
     return isinstance(e, errors.ClientError) and e.code == 429
 
 
+@cache
+def rate_limiter():
+    """One process-wide limiter shared by every Gemini call (agent, extraction, explanations,
+    eval judge), so together they stay under a requests-per-minute quota (LLM_RPM).
+    Waiting is cheaper than tripping 429s and backing off."""
+    rpm = get_settings().llm_rpm
+    if not rpm:
+        return None
+    from langchain_core.rate_limiters import InMemoryRateLimiter
+
+    return InMemoryRateLimiter(requests_per_second=rpm / 60, check_every_n_seconds=0.05, max_bucket_size=1)
+
+
 class LLMOutputError(Exception):
     pass
 
@@ -53,6 +66,8 @@ async def generate_structured[T: BaseModel](
         reraise=True,
     ):
         with attempt:
+            if limiter := rate_limiter():
+                await limiter.aacquire()
             resp = await _client().aio.models.generate_content(model=model, contents=prompt, config=config)
             try:
                 return schema.model_validate_json(resp.text or "")

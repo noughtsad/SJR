@@ -33,6 +33,7 @@ class Settings(BaseSettings):
     # Gemini (hosted embeddings, profile extraction, explanations)
     gemini_api_key: str | None = None
     llm_model: str = "gemini-2.5-flash"
+    llm_rpm: int | None = None  # shared requests/minute cap across all LLM calls (free tier: set ~14)
 
     # Recommendations. Rocchio: q = a*profile + b*mean(saved) - c*mean(dismissed).
     # 1.0 / 0.75 / 0.15 are the textbook defaults (Manning et al., IIR ch. 9).
@@ -50,6 +51,12 @@ class Settings(BaseSettings):
     agent_max_messages: int = 40  # most recent messages of a thread the model sees
     agent_recursion_limit: int = 25  # graph steps per turn (each tool round trip is 2)
     agent_max_tool_rounds: int = 4  # then the model must answer without tools
+
+    # Evals (Layer 5). Prices are USD per 1M tokens for the cost estimate; set them to the
+    # current list price of AGENT_MODEL (defaults are placeholders in the flash-lite range).
+    judge_model: str = "gemini-3.5-flash-lite"
+    price_input_per_mtok: float = 0.10
+    price_output_per_mtok: float = 0.40
 
     # Ingestion
     remotive_url: str = "https://remotive.com/api/remote-jobs"
