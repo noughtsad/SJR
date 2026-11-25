@@ -92,11 +92,13 @@ async def chat_stream(graph, user_id: str, thread_id: str, text: str) -> AsyncIt
         kind = _error_kind(e)
         msg = "The language model is rate-limited; try again later." if kind == "rate_limited" else str(e)[:300]
         yield {"type": "error", "kind": kind, "message": msg}
+        await tracing.aflush()
         return
 
     state = await graph.aget_state(config)
     final = next((m for m in reversed(state.values["messages"]) if isinstance(m, AIMessage)), None)
     answer = _text(final.content) if final else ""
+    await tracing.aflush()  # before the last event: the stream (and CPU allocation) is still open
     yield {
         "type": "final",
         "text": answer,

@@ -78,5 +78,6 @@ async def generate_structured[T: BaseModel](
                 gen.update(output=resp.text, usage_details=usage, level="WARNING", status_message="schema validation")
                 raise LLMOutputError(f"output failed {schema.__name__} validation: {e}") from e
             gen.update(output=parsed.model_dump(), usage_details=usage)
-            return parsed
+        await tracing.aflush()
+        return parsed
     raise AssertionError("unreachable")

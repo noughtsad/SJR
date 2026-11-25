@@ -65,3 +65,13 @@ def generation(name: str, model: str, prompt: str, system: str | None):
 def flush() -> None:
     if (lf := client()) is not None:
         lf.flush()
+
+
+async def aflush() -> None:
+    """Send buffered spans before the response completes. Needed on Cloud Run: once a request
+    ends the instance's CPU is throttled, so the SDK's background exporter would never run and
+    traces would sit in memory until the next request (or be lost at scale-down)."""
+    if client() is not None:
+        import asyncio
+
+        await asyncio.to_thread(flush)

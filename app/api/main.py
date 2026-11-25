@@ -82,7 +82,9 @@ async def lifespan(app: FastAPI):
     await pool.close()
 
 
-app = FastAPI(title="Semantic Job Search", version="0.4.0", lifespan=lifespan)
+# FastAPI's native OpenTelemetry request spans are off: tracing here is Langfuse (LLM/agent
+# spans), and the request spans would parent every agent trace while being dropped on export.
+app = FastAPI(title="Semantic Job Search", version="0.4.0", lifespan=lifespan, telemetry={"tracing": False})
 app.add_middleware(
     RequestContextMiddleware,
     limiter=RateLimiter(
