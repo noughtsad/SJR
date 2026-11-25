@@ -2,6 +2,58 @@
 
 Semantic job search and recommendation over a continuously changing jobs index, with a career agent on top.
 
+**Live demo:** [sjr-five.vercel.app](https://sjr-five.vercel.app) · API docs: [sjr-api-…run.app/docs](https://sjr-api-641171934531.asia-northeast1.run.app/docs) · Health: [/health](https://sjr-api-641171934531.asia-northeast1.run.app/health)
+
+> The API scales to zero when idle, so the first request after a quiet period takes ~20–40 s while models load. The site opens as user `demo`, which has a sample data-engineer resume on file, so the **For you** tab shows recommendations immediately.
+
+## What this project demonstrates
+
+- **Retrieval written by hand, measured end to end.** Postgres full-text search with a BM25-style IDF, pgvector HNSW search with filters, reciprocal rank fusion and a cross-encoder reranker, with no framework wrappers. Each stage's rank, score and latency are returned with every result.
+- **An index that changes.** Scheduled ingestion from three sources (Kaggle LinkedIn dump, HN "Who is hiring", Remotive), dedupe across sources, content-hash change detection so only new or changed postings are re-embedded, and expiry with a guard against partial API responses.
+- **Personalisation that can be explained.** Resume → validated profile (LLM with a strict schema). Recommendations adapt to save/dismiss feedback (Rocchio). Every "why this fits / what you're missing" claim must quote the posting and the resume, and the quotes are verified mechanically.
+- **An agent with guard rails.** A hand-built LangGraph state machine with 9 tools, Postgres-backed conversation memory, long-term user facts and streaming. A citation check stops it from mentioning a job that no tool returned.
+- **Evals that gate changes.** Recall@10 / MRR / nDCG@10 per search mode on 110 labelled queries; 36 scripted agent scenarios scored on tool choice and arguments plus an LLM judge for groundedness. All of it runs in CI against a real Postgres.
+- **Production basics.** FastAPI with request ids, JSON logs, rate limits, timeouts and caching; Langfuse tracing; Docker; deployed on Supabase, Cloud Run and Vercel with auto-deploy and a 3×/day index refresh.
+
+**Headline numbers**
+
+| | |
+|---|---|
+| Search quality, best mode (hybrid + rerank, 80 synthetic queries) | Recall@10 **0.91**, MRR@10 **0.84**, nDCG@10 **0.86** |
+| Gain over keyword-only search | nDCG@10 0.55 → 0.86 |
+| Agent: correct tool and arguments (36 scenarios, 41 turns) | **100%** |
+| Agent answers grounded in tool output (LLM judge) | **95%** |
+| Index | ~19.4k live postings, refreshed 3× a day |
+| Search latency, local GPU (p50) | vector 13 ms · hybrid 56 ms · hybrid + rerank 107 ms |
+
+## In plain English
+
+*What is it?* A job search website that understands what you mean, not just the words you type, plus an assistant you can chat with about your job hunt.
+
+*How does search work?* Ordinary search engines match words: search "ML engineer" and you miss postings that say "machine learning". This project runs two searches at once:
+1. a **word search**, good for exact things like "Kafka" or a job title;
+2. a **meaning search**, where every posting is turned into a list of numbers (an "embedding") that captures its meaning, and postings whose meaning is close to your query come back even when the words differ.
+
+The two result lists are merged. Then a slower but smarter model re-reads the top 30 jobs next to your query and puts them in the best order.
+
+*How do recommendations work?* You upload your resume. An AI reads it and writes a short structured profile: your roles, seniority, years of experience and skills. The profile is matched against every job the same way as a search. When you save jobs, future suggestions lean toward jobs like those; when you click "Not for me", they lean away. For any job you can ask "why?", and you get the reasons it fits and the skills you're missing. Each reason has to quote the actual job posting and your actual resume, and the system checks that the quotes really exist, so it can't make things up.
+
+*What does the assistant do?* You can chat with it: "find remote data jobs", "how do I fit the second one?", "save it", "remember I only want remote roles". It uses the search and recommendation tools above to answer. It remembers the conversation, and it remembers your stated preferences across conversations. It's only allowed to mention jobs its tools actually returned; if it tries to name a job it never looked up, the answer is withdrawn and rewritten.
+
+*How do we know it works?* By testing it like an exam:
+- *Search:* 110 test searches with known good answers, scored automatically for each search method. The combined method with re-ranking finds the right job in the top 10 about 9 times out of 10.
+- *Assistant:* 36 scripted conversations check that it picks the right tool with the right settings, and a second AI grades whether its answers stick to the facts.
+
+These tests run automatically on every code change, and a change that makes search worse fails the build.
+
+*Where does it run?*
+- *Database:* jobs and their embeddings live in a Postgres database (Supabase).
+- *API:* the search and AI service runs on Google Cloud Run.
+- *Website:* on Vercel.
+- *Updates:* every 8 hours a scheduled job pulls new postings, removes delisted ones and processes only what changed.
+
+## Status by layer
+
 | Layer | Status |
 |---|---|
 | 1. Ingestion + changing index (Postgres + pgvector) | ✅ |
@@ -9,7 +61,8 @@ Semantic job search and recommendation over a continuously changing jobs index, 
 | 3. Resume profile, feedback loop, grounded explanations | ✅ |
 | 4. LangGraph career agent (tools, memory, streaming) | ✅ |
 | 5. Retrieval + agent evals in CI | ✅ |
-| 6. Production hardening, tracing, Next.js UI | ✅ (deployment pending) |
+| 6. Production hardening, tracing, Next.js UI | ✅ |
+| 7. Deployment (Supabase + Cloud Run + Vercel), auto-deploy, scheduled refresh | ✅ |
 
 ## Quickstart
 
@@ -137,6 +190,23 @@ python -m app.evals.run --models bge-small minilm gemini   # compare embedding m
 
 GPU vs CPU (i7-12650H): embedding 417 vs ~7 docs/s, rerank of 30 docs 58 ms vs ~1 s.
 
+**Embedding model comparison** (both 384-d, same index and pipeline; switched with `--models`, no code changes):
+
+| nDCG@10 | bge-small-en-v1.5 | all-MiniLM-L6-v2 |
+|---|---|---|
+| vector, synthetic | **0.723** | 0.501 |
+| vector, judged | **0.803** | 0.464 |
+| hybrid + rerank, synthetic | **0.858** | 0.802 |
+| hybrid + rerank, judged | **0.819** | 0.722 |
+| vector p50 latency | 16 ms | 14 ms |
+
+- **bge-small wins on every set and mode, at the same latency.** Two reasons fit the data:
+  - It is trained for asymmetric retrieval (short query → long passage, with a query instruction prefix). MiniLM is a general sentence-similarity model.
+  - It reads 512 tokens per posting against MiniLM's 256, and the average description is ~3.7k characters (~800 tokens), so MiniLM embeds little beyond the title and the first paragraph.
+- MiniLM is worst on terse keyword-style queries (MRR 0.31 vs 0.62), where the short query and the long posting are least alike.
+- **The reranker narrows the gap** (vector nDCG 0.501 → 0.802 after hybrid + rerank). It reads the query and the posting together, so it recovers good jobs that a weaker first stage ranked low, as long as they reach the top 30.
+- *Caveat:* the judged set's pool was built from bge-small runs. MiniLM-only results that were never judged count as non-relevant, which biases that set toward bge-small. The synthetic set (one known target per query) has no such bias and shows the same ordering.
+
 ## Recommendations (Layer 3)
 
 ```
@@ -257,9 +327,93 @@ docker compose --profile api up --build     # or everything in containers: db + 
 **Tracing (Langfuse, optional).** Set `LANGFUSE_PUBLIC_KEY`/`LANGFUSE_SECRET_KEY` to enable it; without them every tracing call is a no-op.
 - Each agent turn becomes one trace, with spans for every graph node, tool call and Gemini call (tokens, latency), tagged with the user and with the thread as the Langfuse session.
 - Direct Gemini calls (profile extraction, explanations, the eval judge) are recorded as generations with token usage. A schema-validation failure is marked as a warning.
+- *On Cloud Run*, the instance's CPU is throttled once a response completes, so the SDK's background exporter can't send anything until the next request. Traces are therefore flushed explicitly before each response ends. FastAPI's native OpenTelemetry request spans are turned off: they parented every agent trace and were dropped on export anyway, and with them on, traces from production never arrived in-request.
 
 ## Deployment
 Supabase (Postgres + pgvector) → Google Cloud Run (API container, models baked into the image, scales to zero) → Vercel (UI). Step-by-step in [DEPLOY.md](DEPLOY.md).
 - `deploy-cloudrun.yml` rebuilds and redeploys the API on every API change to `main`.
 - `refresh-index.yml` keeps the hosted index fresh 3× a day.
 - The local index moves to Supabase without re-embedding: `fixture build --all` exports jobs plus vectors, and `fixture load` imports them.
+
+## Tech stack
+
+| Area | Choice | Why |
+|---|---|---|
+| Database | Postgres 17 + pgvector 0.8 (HNSW, iterative scan) | One store for metadata, full-text search and vectors; filtered ANN without a second system |
+| Embeddings | `BAAI/bge-small-en-v1.5` (384-d), swappable (`minilm`, `gemini-embedding-001`) | Best quality/latency in the comparison above; runs on CPU or GPU |
+| Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Small enough for CPU; reranks only the fused top N |
+| LLM | Gemini (`gemini-3.5-flash-lite` agent, `gemini-2.5-flash` extraction/explanations by default) | Structured output with schema validation and retry |
+| Agent | LangGraph `StateGraph`, `AsyncPostgresSaver`, `AsyncPostgresStore` | Explicit graph with a citation-check node; durable threads and long-term facts in the same Postgres |
+| API | FastAPI, psycopg 3 async pool, SSE streaming | Async I/O end to end; plain-ASGI middleware so streams aren't buffered |
+| UI | Next.js 16 (App Router), no UI framework | Small, one page, three tabs |
+| Observability | JSON logs with request ids, Langfuse (OpenTelemetry) | Per-request correlation; per-turn traces with token usage |
+| Infra | Docker, GitHub Actions, Supabase, Cloud Run, Vercel | CI evals, auto-deploy, scheduled refresh, scale-to-zero hosting |
+
+## Repository layout
+
+```
+app/
+  ingestion/   sources (remotive, hn_hiring, kaggle_csv), normalize (text, hashes, skills, not-a-job filter), pipeline
+  embeddings/  model registry (swappable models), incremental embedding store
+  search/      keyword (BM25-lite on FTS), vector (HNSW + filters), fusion (RRF), rerank, service (orchestration + timings)
+  profile/     resume reading, LLM profile extraction, users/profiles/feedback storage
+  recommend/   Rocchio + scoring (pure functions), recommendation service, grounded explanations
+  agent/       LangGraph graph, tools, long-term memory, runtime (checkpointer, streaming)
+  api/         FastAPI app, middleware (request ids, logs, rate limits)
+  evals/       retrieval metrics + runner, synthetic/judged sets, labelling tool, CI fixture, agent eval + judge
+  llm.py       Gemini wrapper: schema-validated output, retries, shared rate limiter
+  tracing.py   optional Langfuse tracing
+db/schema.sql  idempotent schema (jobs, embeddings, users, feedback, explanations, stats)
+evals/         query sets, agent scenarios, CI thresholds, CI corpus fixture, latest results
+web/           Next.js UI
+tests/         unit tests + offline agent-graph tests
+DEPLOY.md      step-by-step deployment
+```
+
+## Testing
+
+```bash
+pytest -q                                  # 59 tests, no network or DB needed
+ruff check .
+python -m app.evals.run                    # retrieval eval on your local index
+python -m app.evals.run --ci               # on the CI corpus, with regression floors
+LLM_RPM=14 python -m app.evals.agent_eval  # agent scenarios + LLM judge (needs GEMINI_API_KEY)
+```
+
+- *Unit tests* cover hashing, normalisation, the not-a-job filter, metrics, RRF, Rocchio and scoring, the grounding checker, middleware (rate limits, request ids) and the eval scoring.
+- *Agent-graph tests* run the **real** LangGraph graph with a scripted chat model and in-memory persistence. They cover tool loops, citation retract/retry, tool errors, memory, thread isolation, the tool budget and transient-error retries.
+
+## Configuration reference
+
+All settings are environment variables (or `.env`), defined in [`app/config.py`](app/config.py). The main ones:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `DATABASE_URL` | local Docker DB | Postgres connection string |
+| `GEMINI_API_KEY` | none | Enables profile extraction, explanations and the agent (search works without it) |
+| `LLM_MODEL` / `AGENT_MODEL` | `gemini-2.5-flash` / `gemini-3.5-flash-lite` | Models for direct calls and for the agent |
+| `LLM_RPM` | unset | Shared requests-per-minute cap across all LLM calls |
+| `EMBEDDING_MODEL` | `bge-small` | Key from the model registry |
+| `DEVICE` | `auto` | `cuda` / `cpu` / `auto` |
+| `RERANK_TOP_N`, `RERANK_MAX_TOKENS` | 30, 384 | How much the cross-encoder reads |
+| `KEYWORD_MAX_DF`, `RRF_K`, `RRF_W_KEYWORD`, `RRF_W_VECTOR` | 0.15, 60, 1, 1 | Keyword and fusion tuning |
+| `ROCCHIO_ALPHA/BETA/GAMMA` | 1.0 / 0.75 / 0.15 | Feedback weights |
+| `RATE_LIMIT_PER_MIN`, `RATE_LIMIT_LLM_PER_MIN` | 120, 10 | Per-IP API limits |
+| `REQUEST_TIMEOUT_S`, `DB_STATEMENT_TIMEOUT_MS` | 15, 10000 | Timeouts |
+| `CORS_ORIGINS` | `["http://localhost:3000"]` | Allowed browser origins (JSON list) |
+| `LOG_FORMAT` | `text` | `json` for one JSON object per line |
+| `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, `LANGFUSE_HOST` | unset | Enable tracing |
+
+## Limitations and what I'd do next
+
+- **Labels.** The realistic query set is graded by an LLM judge against a written rubric, not by people. The labelling tool for human grades exists (`python -m app.evals.label`) and stores them separately.
+- **Synthetic queries have one known answer each**, so absolute recall is a lower bound. Comparisons between modes are fair, but the absolute numbers understate quality.
+- **Skill tagging is a small dictionary** (~60 skills). Overlap scores and "missing skills" miss the long tail; an LLM or embedding-based skill extractor at ingestion time would fix this.
+- **Free-tier constraints.** The hosted demo uses free Gemini quotas, so the agent can be rate-limited at busy times. CPU-only hosting makes reranked search ~2–3 s, versus ~0.1 s on a GPU. Cold starts take ~20–40 s.
+- **Single instance.** Rate limits and the search cache live in process memory (`--max-instances 1`); several replicas would need Redis.
+- **No authentication.** User handles are free text, suitable for a demo only. A real deployment needs auth before storing resumes.
+- **Next steps:**
+  - learning-to-rank on click/save signals;
+  - tune RRF weights per query type (short keyword queries vs natural sentences);
+  - an ONNX or quantised reranker for cheaper CPU serving;
+  - grow the human-labelled set to tune against.
